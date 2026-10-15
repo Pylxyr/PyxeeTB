@@ -1,5 +1,5 @@
-from twitch_radio.db import Quote
-from twitch_radio.quotes import format_quote, parse_quote_id
+from pyxeetb.db import Quote
+from pyxeetb.quotes import format_quote, parse_quote_id
 
 
 def test_parse_quote_id():

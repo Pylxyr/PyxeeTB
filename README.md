@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Twitch Radio Bot" width="140">
+  <img src="assets/logo.png" alt="PyxeeTB" width="140">
 </p>
 
-## <p align="center">Twitch Radio Bot</p>
+## <p align="center">PyxeeTB</p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python 3.11+">
@@ -13,7 +13,8 @@
 A standalone Twitch chat bot for moderation, viewer engagement, and stream
 alerts — chat filters, a points/watch-time economy with mod-managed custom
 commands, and optional follow/sub/raid announcements, plus a public
-`/commands` reference page and a password-gated `/settings` dashboard.
+`/commands` reference page and a `/settings` dashboard that your reverse
+proxy signs you in to.
 
 ## Features
 
@@ -50,9 +51,14 @@ commands, and optional follow/sub/raid announcements, plus a public
   needs its own small OAuth scope beyond the base setup and degrades
   gracefully without it — see
   [Alerts, shoutouts, clips & polls](#alerts-shoutouts-clips--polls).
-- **Stream sessions** — live/offline is tracked from EventSub (with a
-  polling fallback), and an optional end-of-stream summary posts the top
-  point earners.
+- **Stream state** — live/offline, uptime, title and category come from
+  EventSub (`stream.online`/`offline`, `channel.update`) with a polling
+  fallback, so `!uptime`, `!title` and `!game` cost no API call; an optional
+  end-of-stream summary posts the top point earners.
+- **Command throttling and usage counts** — viewers' built-in commands are
+  rate-limited (silently; moderators exempt), and every command's use is
+  counted so keeping or cutting one is a decision made on numbers
+  (shown on `/settings`).
 - **Chat overlay** (`/chat-overlay`) — a Browser Source showing recent chat
   on stream, last 10 messages or 10 minutes each, whichever's first; the
   bot's own messages never appear in it — see [Chat overlay](#chat-overlay).
@@ -61,8 +67,8 @@ commands, and optional follow/sub/raid announcements, plus a public
   from chat's `!commands` once `TWITCH_PUBLIC_BASE_URL` is set — see
   [Public commands page](#public-commands-page).
 - **`/settings` web page** — every tunable and feature toggle (grouped),
-  the streamer's PC specs/peripherals, a command reference and a read-only
-  community dashboard, behind a sign-in page.
+  command usage counts, a command reference and a read-only community
+  dashboard, behind your reverse proxy's sign-in.
 - **Health and backups** — `/healthz` reports chat connectivity, live state,
   the age of the last chat message and database status (HTTP 503 when the
   database is unreachable); `community.db` is backed up daily and the newest
@@ -85,8 +91,8 @@ commands, and optional follow/sub/raid announcements, plus a public
 ### Quick install (Linux)
 
 ```bash
-git clone https://github.com/Pylxyr/pyxee-radio-bot.git twitch-radio-bot
-cd twitch-radio-bot
+git clone https://github.com/Pylxyr/pyxee-twitch-bot.git pyxeetb
+cd pyxeetb
 bash ./deploy/setup.sh
 ```
 
@@ -103,11 +109,13 @@ Safe to re-run; already-filled values are left alone.
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp deploy/.env.example .env   # then edit it
-mkdir -p data logs
+mkdir -p data
 ```
 
-Run `python bot.py` directly, or adapt `deploy/twitch-radio.service` for
+Run `python bot.py` directly, or adapt `deploy/pyxeetb.service` for
 your own paths/user.
+
+Upgrading an existing install? See [UPGRADING.md](UPGRADING.md).
 
 ## Configuration
 
@@ -121,21 +129,18 @@ required; everything else has a default.
 | `TWITCH_BOT_ID` | — required | Numeric Twitch user ID the bot chats as (digits only) |
 | `TWITCH_OWNER_ID` | — required | Numeric Twitch user ID of the broadcaster/channel |
 | `TWITCH_PREFIX` | `!` | Chat command prefix |
-| `TWITCH_HTTP_HOST` | `127.0.0.1` | HTTP bind address (the old name `TWITCH_NOWPLAYING_HOST` still works). Leave it on loopback and publish through [Caddy](#publishing-with-caddy) |
-| `TWITCH_HTTP_PORT` | `8098` | HTTP port, 1024–65535 (old name `TWITCH_NOWPLAYING_PORT` still works) |
-| `TWITCH_SETTINGS_PASSWORD` | unset | Password for the `/login` page that gates `/settings`. Plain text, or a hash from `python bot.py --hash-password` |
-| `TWITCH_SETTINGS_ALLOW_OPEN` | `false` | With no password, `/settings` works only from this machine itself — never through a reverse proxy or a non-loopback bind. `true` lifts that for a fully trusted network |
-| `TWITCH_SESSION_HOURS` | `12` | How long a sign-in lasts, 1–168 |
-| `TWITCH_SESSION_REMEMBER_DAYS` | `30` | Length of a "keep me signed in" session, 0–365; `0` hides the checkbox |
-| `TWITCH_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | IPs/CIDRs of reverse proxies whose `X-Forwarded-*` headers are believed |
-| `TWITCH_PUBLIC_BASE_URL` | unset | Externally-reachable base URL (e.g. `https://radio.example.com`), no trailing slash. When set, `!commands` links to `<url>/commands` instead of the terse in-chat listing — see [Public commands page](#public-commands-page) |
-| `TWITCH_CHAT_EMOTE_SOURCES` | `7tv,bttv,ffz,cheermotes` | Extra emote sources the chat overlay draws as images (Twitch's own emotes always are) — any subset, or `none`. See [Chat overlay](#chat-overlay) |
+| `TWITCH_HTTP_HOST` | `127.0.0.1` | HTTP bind address. Leave it on loopback and publish through [Caddy](#publishing-with-caddy) |
+| `TWITCH_HTTP_PORT` | `8098` | HTTP port, 1024–65535 |
+| `TWITCH_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | IPs/CIDRs of reverse proxies whose `X-Forwarded-*` and `X-Authenticated-User` headers are believed |
+| `TWITCH_PUBLIC_BASE_URL` | unset | Externally-reachable base URL (e.g. `https://bot.example.com`), no trailing slash. When set, `!commands` links to `<url>/commands` instead of the terse in-chat listing — see [Public commands page](#public-commands-page) |
 | `TWITCH_RESERVED_COMMANDS` | unset | Comma-separated command names another bot answers to (`sr,skip,queue`); custom commands can't reuse them |
-| `TWITCH_REPLY_SUFFIXES` | `✨,💫,⭐,🌟` | Comma-separated suffixes rotated onto replies so Twitch's duplicate-message rule never drops one; `none` disables |
+| `TWITCH_REPLY_SUFFIXES` | `✨,💫,⭐,🌟` | Comma-separated suffixes the bot adds to a reply *only when it would repeat a message it just sent* (Twitch silently drops exact repeats); `none` disables |
 | `TWITCH_DB_BACKUP_KEEP` | `7` | Daily database backups to keep under `data/backups/`; `0` disables |
-| `TWITCH_TOKEN_FILE` / `TWITCH_TUNABLES_FILE` / `TWITCH_SPECS_FILE` / `TWITCH_TOGGLES_FILE` / `TWITCH_DB_FILE` | see `.env.example` | Filenames under `data/` |
-| `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL` |
-| `LOG_TO_FILE` | `true` | Writes to `logs/` in addition to stdout |
+| `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR`/`CRITICAL`. Logs go to stdout — under systemd, `journalctl -u pyxeetb` |
+
+Feature toggles and tuning values (everything on `/settings`, `!toggle` and
+`!setlimit`) are stored in the database, not in `.env`, so a backup of
+`data/community.db` carries them.
 
 Registering the Twitch app: Category **Chat Bot**, OAuth Redirect URL
 exactly `http://localhost:4343/oauth/callback`, Client Type
@@ -148,7 +153,7 @@ exactly `http://localhost:4343/oauth/callback`, Client Type
 Token, obtained once through a small local OAuth server the bot starts on
 port 4343.
 
-1. Start the service (`sudo systemctl enable --now twitch-radio`, or run
+1. Start the service (`sudo systemctl enable --now pyxeetb`, or run
    `python bot.py`). Chat won't respond yet — that's expected until step 3.
 2. On a remote server, tunnel the port first:
    ```bash
@@ -165,7 +170,7 @@ Reusing the same already-logged-in session for both steps is the most
 common way this goes wrong — Twitch just authorizes whichever account is
 currently logged in, with no error either way, and chat silently doesn't
 work afterward. The bot checks for this on every token save and logs which
-account (if either) is missing a token — check `journalctl -u twitch-radio
+account (if either) is missing a token — check `journalctl -u pyxeetb
 -f -o cat` if the bot doesn't respond in chat after both steps.
 
 Chat comes online automatically the moment both accounts are authorized —
@@ -206,7 +211,7 @@ missing, so leaving some out is always safe.
 
 Full descriptions, usage, and access level for every command below are also
 on the `/settings` page, generated from the same source
-(`twitch_radio/commands_reference.py`); a test fails if a command is
+(`pyxeetb/commands_reference.py`); a test fails if a command is
 registered but not documented there (or the reverse).
 
 | Command | Who | Does |
@@ -224,7 +229,6 @@ registered but not documented there (or the reverse).
 | `!8ball <question>` | anyone | Answers a yes/no question |
 | `!queue [join\|leave\|list]` | anyone | Joins/leaves the viewer queue, or checks it |
 | `!giveaway [status]` | anyone | Enters the running giveaway |
-| `!specs` / `!peripherals` | anyone | The streamer's PC specs / peripherals (set on `/settings`) |
 | `!uptime` / `!title` / `!game` | anyone | Stream info |
 | `!followage` | anyone | How long you've followed — needs `moderator:read:followers` |
 | `!clip` | anyone | Clips the last ~30s — needs `clips:edit` on the broadcaster's token |
@@ -239,7 +243,7 @@ registered but not documented there (or the reverse).
 | `!addquote <text>` / `!delquote <id>` | moderators | Adds or removes a quote |
 | `!timer add <name> <minutes> <message>` | moderators | Also `remove`, `on`, `off`, `min <name> <messages>`, `list` |
 | `!queue open\|close\|next [n]\|clear` | moderators | Manages the viewer queue (size cap: `!setlimit queue_max_size`) |
-| `!giveaway start <prize>` / `pick` / `cancel` | moderators | Runs a prize giveaway |
+| `!giveaway start <prize>` / `pick` / `reroll` / `cancel` | moderators | Runs a prize giveaway |
 | `!permit <user> [seconds]` | moderators | Lets a chatter post links briefly |
 | `!blockterm add\|remove <term>` / `list` | moderators | Manages the blocked-terms list |
 | `!allowdomain add\|remove <domain>` / `list` | moderators | Manages always-allowed link domains |
@@ -264,27 +268,26 @@ Binds to `127.0.0.1` by default (`TWITCH_HTTP_HOST`).
 | `GET /ws/chat` | public, connection-capped | WebSocket version, pushed on every new message |
 | `GET /healthz` | public, rate-limited, cached 5s | Chat connection, live state, last-chat age, alert subscriptions, missing scopes, database status (503 if the database is down) |
 | `GET /logo.png` | public | The bot mark (add `?s=32` for the favicon size) |
-| `GET`/`POST /login` | public | Sign-in page |
-| `POST /logout` | signed in | Ends the session |
-| `GET`/`POST /settings` | signed in | Toggles and specs/peripherals editor |
+| `GET`/`POST /settings` | proxy sign-in | Toggles, tunables and command usage |
 
-"Signed in" means a session from the `/login` page, using
-`TWITCH_SETTINGS_PASSWORD`. Browsers hitting a gated page are redirected
-to `/login` and sent back afterwards; scripts get a `401` with a JSON body
-and can sign in by POSTing `password=...` to `/login` and reusing the
-cookie (`curl -c jar -d password=... https://<domain>/login`).
+`/settings` has no login of its own. It is reached one of two ways:
 
-With no password set, those endpoints work only from this machine itself:
-any request that arrives through a reverse proxy, or over a non-loopback
-bind address, gets a `403` unless you opt in with
-`TWITCH_SETTINGS_ALLOW_OPEN=true`. Failed sign-ins are rate-limited per
-visitor address (IPv6 visitors are grouped by /64) and only two password
-checks run at a time. With no password set, `/settings` also insists the
-request's `Host` is `localhost`, `127.0.0.1` or `[::1]`, which stops a
-malicious web page from reaching it via DNS rebinding. Everything else is
-always public, since it's meant to be fetched by OBS or a browser without
-auth: `/chat.json` allows 120 requests a minute per visitor, `/healthz` 30,
-and `/ws/chat` 8 open sockets per visitor (100 in total).
+- **Through your reverse proxy**, which signs you in (Caddy's `basic_auth`,
+  set up by `deploy/setup.sh`) and tells the bot who it let through in an
+  `X-Authenticated-User` header. The bot only believes that header when the
+  connection comes from a trusted proxy address (`TWITCH_TRUSTED_PROXIES`),
+  and the proxy overwrites it on every request, so a client can't forge it.
+- **Directly on this machine** (loopback, no proxy headers): your own
+  browser, or over an SSH tunnel. The request's `Host` must be `localhost`,
+  `127.0.0.1` or `[::1]`, which stops a malicious web page from reaching it
+  via DNS rebinding.
+
+Anything else gets a `403`. Saving the form also requires a matching
+`Origin` (a browser resends Basic credentials on its own, so this is what
+stops another site from submitting it as you). Everything else is always
+public, since it's meant to be fetched by OBS or a browser without auth:
+`/chat.json` allows 120 requests a minute per visitor, `/healthz` 30, and
+`/ws/chat` 8 open sockets per visitor (100 in total).
 
 ## Public commands page
 
@@ -309,9 +312,9 @@ opened by everyone watching a stream rather than just the streamer or a
 mod, it's held to a higher bar than the other public endpoints above:
 
 - **Read-only.** No form, no query parameter the server ever reads, no
-  state anywhere. The page is built once from the command list and the
-  configured prefix at startup and served byte-for-byte identical to
-  every visitor after that.
+  state anywhere. The page is built from the command list, the configured prefix and
+  the current custom commands/counters, cached for 30 seconds, and served
+  identically to every visitor.
 - **Rate-limited** at 60 requests/minute per IP — generous for a person
   browsing, enough to blunt a script hammering the one route now linked
   to an entire channel's chat at once.
@@ -346,21 +349,14 @@ announcements, none of it. Everything else does, moderators and the
 broadcaster included; only the link/caps filters exempt mods, not
 visibility on this overlay.
 
-**Emotes are drawn as images**, not as their names: Twitch's own (global and
-subscriber), plus — on by default — 7TV, BetterTTV and FrankerFaceZ emotes
-(global ones and the ones set up for your channel) and Twitch cheermotes,
-shown as the artwork followed by the bit amount in the tier's colour. 7TV
-"zero-width" emotes (hats and other overlays) are stacked on the emote before
-them. The bot downloads the third-party lists when it starts and refreshes
-them every 30 minutes; an emote added a minute ago shows as text until then,
-and any provider that's down just means its emotes show as text — chat itself
-is never affected. Third-party emotes are matched by exact word (case
-sensitive), the way those providers' own chat clients do it; BetterTTV's
-"effect" codes (`c!`, `h!` …) are left as text. Set
-`TWITCH_CHAT_EMOTE_SOURCES` to a comma-separated subset of
-`7tv,bttv,ffz,cheermotes` (or `none`) to turn sources off. Emote artwork is
-loaded by the OBS browser source directly from those providers' CDNs, so the
-machine running OBS needs internet access.
+**Emotes are drawn as images**, not as their names: Twitch resolves its own
+(global and subscriber) emotes, and cheermotes are shown as the artwork
+followed by the bit amount in the tier's colour (the artwork comes from
+Twitch's Bits API, refreshed every 30 minutes; if that lookup fails the
+cheermote just shows as text — chat itself is never affected). Third-party
+emote services (7TV, BetterTTV, FrankerFaceZ) are not supported. Emote
+artwork is loaded by the OBS browser source directly from Twitch's CDN, so
+the machine running OBS needs internet access.
 
 Nothing here is persisted — a restart starts the strip empty, which is
 correct for a "what's happening right now" widget rather than a log.
@@ -383,7 +379,7 @@ by the bot.
 `deploy/setup.sh` sets it up — answer yes at the Caddy prompt, or later:
 
 ```bash
-CADDY_DOMAIN=radio.example.com CADDY_EMAIL=you@example.com bash deploy/setup.sh
+CADDY_DOMAIN=bot.example.com CADDY_EMAIL=you@example.com bash deploy/setup.sh
 ```
 
 The domain's A record must point at the VPS. With no domain, leave it
@@ -392,50 +388,50 @@ DNS name that resolves to that IP, which Caddy can get a real certificate
 for. The script:
 
 - installs Caddy from its official apt repository
-- writes `/etc/caddy/conf.d/twitch-radio.caddy` from `deploy/Caddyfile` and
+- writes `/etc/caddy/conf.d/pyxeetb.caddy` from `deploy/Caddyfile` and
   adds one `import` line to `/etc/caddy/Caddyfile` (the stock file is
   backed up first; a customised one is kept and only appended to)
 - validates and reloads Caddy, opens ports 80/443 in `ufw` if it's active,
   and prints the cloud-firewall and Oracle `iptables` steps for 80/443
-- sets `TWITCH_PUBLIC_BASE_URL` and generates a hashed sign-in password if
-  you ask it to
+- sets `TWITCH_PUBLIC_BASE_URL`, and asks for a `/settings` password (or
+  generates one) that Caddy checks before it lets anyone near `/settings` —
+  username `admin`, stored only as a hash in the Caddy config
 
 Open **80/tcp, 443/tcp and 443/udp** (HTTP/3). Keep the bot's own port
 closed to the internet.
 
-`deploy/Caddyfile` flushes responses without buffering, retries for up to
-5 seconds while the bot restarts instead of returning 502, and caps
-request bodies at 1 MB.
+`deploy/Caddyfile` puts `/settings` behind `basic_auth` and passes the signed-in
+name to the bot as `X-Authenticated-User` (stripping that header from every
+other request), flushes responses without buffering, retries for up to 5
+seconds while the bot restarts instead of returning 502, and caps request
+bodies at 1 MB.
 
 Behind the proxy the bot reads the visitor's real address from
 `X-Forwarded-For` (only when the connection comes from a trusted proxy,
-loopback by default — see `TWITCH_TRUSTED_PROXIES`), so lockouts and rate
-limits apply per visitor instead of to everyone at once. It marks the
-session cookie `Secure` when the proxy says the visitor used HTTPS, and
-with no password set it refuses `/settings` for anything that came through
-a proxy.
+loopback by default — see `TWITCH_TRUSTED_PROXIES`), so rate limits apply
+per visitor instead of to everyone at once, and it refuses `/settings` for
+anything that came through a proxy that didn't vouch for it.
 
 Other setups: nginx needs `proxy_buffering off`, a long `proxy_read_timeout`,
-`Upgrade` headers for `/ws/`, and `Host`, `X-Forwarded-For` and
-`X-Forwarded-Proto` passed through. If only your own machines need access,
+`Upgrade` headers for `/ws/`, `Host`, `X-Forwarded-For` and
+`X-Forwarded-Proto` passed through, and for `/settings` its own `auth_basic`
+plus `proxy_set_header X-Authenticated-User $remote_user;` (and clearing that
+header everywhere else). If only your own machines need access,
 an SSH tunnel or Tailscale exposes nothing to the internet instead.
 
 ## Security
 
-- **`/settings` sits behind a sign-in page.** Sessions are server-side,
-  in memory (a restart signs everyone out), in an `HttpOnly`,
-  `SameSite=Lax` cookie that becomes `Secure` and `__Host-`-prefixed over
-  HTTPS. `TWITCH_SETTINGS_PASSWORD` may be a scrypt hash
-  (`python bot.py --hash-password`) so `.env` doesn't hold the password.
-- **Sign-in and `/settings` are protected against CSRF** — a POST whose
+- **`/settings` is gated by the reverse proxy's sign-in** (Caddy
+  `basic_auth`; the password lives only as a hash in the Caddy config).
+  The bot trusts the proxy's `X-Authenticated-User` header only from a
+  trusted proxy address, and answers direct requests only on loopback with
+  a loopback `Host`.
+- **Saving `/settings` is protected against CSRF** — a POST whose
   `Origin`/`Referer` doesn't match the host, or that the browser marks
   cross-site, is rejected with 403.
-- **Sign-in has brute-force lockout** — 10 failed attempts from the same
-  visitor address within 5 minutes get a 429 (in-memory, resets on
-  restart).
 - **The OAuth token file** (`data/twitch_tokens.json`) is `chmod 600`
-  after every save; the database, its backups and the log file are created
-  `600` and `data/` and `logs/` `700`, and the systemd unit sets `UMask=0077`.
+  after every save; the database and its backups are created `600` and
+  `data/` `700`, and the systemd unit sets `UMask=0077`.
 - **The public chat overlay only shows messages that passed AutoMod.** A
   message the filters catch never reaches `/chat-overlay`, `/chat.json` or
   `/ws/chat`, and a message or user a moderator removes on Twitch
@@ -459,13 +455,16 @@ an SSH tunnel or Tailscale exposes nothing to the internet instead.
 - **`.env` and `data/` are gitignored**, and the systemd unit's sandbox
   only allows writes under `data/`.
 
-**Trust model: moderators are administrators of the bot.** Every moderator
-(and the broadcaster) can, from chat, change economy limits (`!setlimit`),
-switch features and filters on and off (`!toggle`), manage the blocked-term
-and domain lists, timers, counters, custom commands and prediction/poll
-state, and `!setlimit` can raise bonuses and the maximum bet to very large
-values. Only add moderators you'd trust with that; there is currently no
-separate broadcaster-only tier.
+**Trust model.** Moderators can manage most of the bot from chat: switch
+chat features on and off (`!toggle`), tune non-economy limits (`!setlimit`),
+manage the blocked-term and domain lists, timers, counters, custom commands
+and prediction/poll state. **Economy and enforcement settings are the
+broadcaster's alone:** every points/rewards and gambling limit, and the
+`gamble_enabled`, `duels_enabled`, `filter_delete_enabled`,
+`filter_timeout_enabled` and `stream_summary_enabled` toggles, can be *read*
+by a moderator but only *changed* by the broadcaster (the `/settings` page is
+the broadcaster's own, behind the proxy's sign-in). Only add moderators
+you'd trust with the rest.
 
 This isn't a hardened public-internet service — the intent is "one
 streamer's own bot, reachable by the people who need it," not "safe to
@@ -478,7 +477,8 @@ rather than binding it to a public address.
 
 Points and watch-time accrue for chat *activity* — sending messages while
 the stream is live — not true viewer presence (that needs viewer-list data
-this bot doesn't fetch). Every minute, each chatter active in the last five
+this bot doesn't fetch). `!give`, `!duel` and `!points <user>` find a chatter
+by Twitch login or display name (login first), as recorded when they chat. Every minute, each chatter active in the last five
 minutes earns `points_per_active_minute` (subscribers get
 `sub_multiplier_percent` of that). Live/offline comes from EventSub
 `stream.online`/`stream.offline` when available and a cached Helix poll
@@ -500,9 +500,9 @@ otherwise; if the poll fails, the last known state is kept.
   target can only have one pending challenge at a time. Unlike `!gamble`,
   `duel_challenger_win_chance_percent` defaults to 50 — a fair coin flip,
   since this is PvP, not a wager against the house. Settlement
-  (`Database.settle_duel`) re-checks both balances atomically at accept
-  time, not just when the challenge was issued, and refuses cleanly (no
-  points move) if the loser can no longer cover it.
+  (`Database.settle_duel`) re-checks the loser's balance atomically at
+  accept time, not just when the challenge was issued, and refuses cleanly
+  (no points move) if they can no longer cover it.
 - **End-of-stream summary** — with `stream_summary_enabled`, the bot posts
   the top three earners of the session when the stream goes offline.
 
@@ -525,8 +525,9 @@ otherwise; if the poll fails, the last known state is kept.
   currency and no toggle to gate it behind. `!giveaway start <prize>`
   (mod) opens entries; a bare `!giveaway` from a viewer enters (idempotent
   — entering twice just confirms you're in); `!giveaway pick` (mod) draws
-  a random winner; `!giveaway cancel` (mod) scraps it. One giveaway at a
-  time, in-memory, cleared at the end of the stream.
+  a random winner, `!giveaway reroll` (mod) draws a replacement if they
+  don't answer, and `!giveaway cancel` (mod) scraps it. One giveaway at a
+  time, in-memory, cleared when the stream goes offline.
 
 ### Counters
 
@@ -555,8 +556,11 @@ twice when it *does* go through `!predict` itself.
 
 Hype Train progress announces alongside the other alerts — gated by the
 same `alerts_enabled` toggle, since it's the same kind of "something
-happened on stream" event as a follow or a raid. A level-up fires once per
-level (not once per contribution, which would spam chat on a busy train).
+happened on stream" event as a follow or a raid. A level-up is announced once
+per level (Twitch reports it as a higher `level`, with `progress` reset, so
+the bot remembers the highest level it has announced for the current train);
+contributions within a level stay silent, which would otherwise spam chat on
+a busy train.
 
 ### Chat filters (AutoMod)
 
@@ -572,8 +576,7 @@ can be (`filter_exempt_subs`).
   chatter a short window.
 - **Caps** (`caps_filter_enabled`) — shouting is measured on the message
   *without emotes*, so `KEKW KEKW KEKW` is fine. `caps_threshold_percent`
-  sets the ratio; needs 10 letters. (Third-party emotes are only recognised
-  while their sources are enabled — `TWITCH_CHAT_EMOTE_SOURCES`.)
+  sets the ratio; needs 10 letters. 
 - **Blocked terms** (`term_filter_enabled`) — whole-word, case-insensitive;
   the list is managed with `!blockterm` and never echoed into chat. Text is
   compared after Unicode normalisation, so zero-width characters, soft
@@ -630,9 +633,11 @@ scopes for all of it — see
 [One-time Twitch authorization](#one-time-twitch-authorization) for
 exactly which scope backs which feature (and what still works if you
 trimmed some out of those URLs). One toggle, `alerts_enabled`, gates chat
-announcements for follows, subs (not gift subs — those fire a separate
-event this bot doesn't listen for, to avoid double-announcing one gift as
-a self-subscribe), cheers, raids, and Hype Train progress, plus an
+announcements for follows, new subs, resubs (Twitch only sends one when the
+viewer chooses to share the resub message), gifted subs (announced once, for
+the gifter, who also earns the subscription bonus for each sub gifted, up to
+50 per gift; the recipients' own events are ignored so a gift is never
+announced twice), cheers, raids, and Hype Train progress, plus an
 automatic shoutout for whoever raided — see
 [Predictions & Hype Train](#predictions--hype-train) for the Hype Train
 side specifically. Each underlying EventSub subscription is attempted
@@ -653,19 +658,19 @@ harmless either way — just inert until you have.
 
 ### Systemd hardening
 
-`deploy/twitch-radio.service` runs with a fairly tight systemd sandbox:
+`deploy/pyxeetb.service` runs with a fairly tight systemd sandbox:
 `MemoryDenyWriteExecute`, `SystemCallFilter=@system-service`,
 `ProtectSystem=strict`, `ProtectHome=read-only` with only `data/` and
 `logs/` writable, `UMask=0077`, `PrivateDevices`, `ProtectProc=invisible`,
 `RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX`, `RestrictNamespaces`,
 `NoNewPrivileges`, an empty capability set, and the rest of the usual
 hardening directives. After changing the unit, run
-`systemd-analyze security twitch-radio` and restart it to confirm the bot still
+`systemd-analyze security pyxeetb` and restart it to confirm the bot still
 connects.
 
 ### Resource caps (`MemoryMax`, `MemoryHigh`, `CPUQuota`)
 
-`deploy/twitch-radio.service` sets a cgroup-level memory/CPU ceiling
+`deploy/pyxeetb.service` sets a cgroup-level memory/CPU ceiling
 (512M/768M/150%) independent of `OOMScoreAdjust` above — that only
 affects the *global* OOM-killer's priority, not what happens if this unit
 alone runs away. These are conservative starting points, not a hard
@@ -674,4 +679,4 @@ non-runaway load.
 
 ## License
 
-No license file is currently included in this repository.
+MIT — see [LICENSE](LICENSE).

@@ -1,7 +1,7 @@
 from conftest import run
-from twitch_radio.customcommands import CustomCommandStore, clean_name, normalize_role, render_response, role_allows
-from twitch_radio.timers import TimerScheduler, parse_add
-from twitch_radio.db import TimerRow
+from pyxeetb.customcommands import CustomCommandStore, clean_name, normalize_role, render_response, role_allows
+from pyxeetb.timers import TimerScheduler, parse_add
+from pyxeetb.db import TimerRow
 
 
 def test_names_and_roles():

@@ -12,13 +12,20 @@ def _scope_sets(relative: str) -> list[frozenset[str]]:
     return [frozenset(match.split("+")) for match in _SCOPES.findall(text)]
 
 
-def test_setup_script_readme_and_docstring_request_the_same_oauth_scopes():
+def test_setup_script_and_readme_request_the_same_oauth_scopes():
     readme = _scope_sets("README.md")
     assert len(readme) == 2, "README should have one bot URL and one broadcaster URL"
-    for relative in ("deploy/setup.sh", "twitch_radio/chatbot.py"):
-        assert _scope_sets(relative) == readme, f"{relative} asks for different scopes than README.md"
+    assert _scope_sets("deploy/setup.sh") == readme, "deploy/setup.sh asks for different scopes than README.md"
+
+
+def test_env_example_only_mentions_variables_the_code_reads():
+    """The example file once advertised legacy variable names the code only half-supported."""
+    config = (ROOT / "pyxeetb" / "config.py").read_text(encoding="utf-8")
+    example = (ROOT / "deploy" / ".env.example").read_text(encoding="utf-8")
+    for name in sorted(set(re.findall(r"^#?\s*((?:TWITCH|LOG)_[A-Z_]+)=", example, flags=re.M))):
+        assert f'"{name}"' in config, f"deploy/.env.example mentions {name}, which config.py never reads"
 
 
 def test_the_unit_installs_files_private_to_the_service_user():
-    unit = (ROOT / "deploy" / "twitch-radio.service").read_text(encoding="utf-8")
+    unit = (ROOT / "deploy" / "pyxeetb.service").read_text(encoding="utf-8")
     assert "UMask=0077" in unit and "ProtectSystem=strict" in unit

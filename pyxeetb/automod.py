@@ -1,0 +1,174 @@
+"""Chat moderation: applies the pure rules in filters.py to a ChatEvent and
+carries out the response — a rate-limited public warning, a delete, and (after
+repeated strikes) a timeout. The Twitch calls are injected, so the whole
+policy is testable with fakes."""
+
+from __future__ import annotations
+
+import logging
+import time
+from collections.abc import Awaitable, Callable
+
+from pyxeetb.chatevent import ChatEvent
+from pyxeetb.cooldown import CooldownTracker
+from pyxeetb.db import Database
+from pyxeetb.filters import (
+    REASON_CAPS,
+    REASON_LINK,
+    REASON_TERM,
+    PermitBook,
+    StrikeTracker,
+    TermMatcher,
+    Violation,
+    evaluate,
+    find_link,
+    normalize_domain,
+    normalize_for_matching,
+)
+from pyxeetb.runtime import RuntimeStatus
+from pyxeetb.settings import LiveSettings
+
+log = logging.getLogger(__name__)
+
+KIND_TERM = "term"
+KIND_DOMAIN = "domain"
+
+Announce = Callable[[str], Awaitable[None]]
+DeleteMessage = Callable[[str], Awaitable[bool]]
+TimeoutUser = Callable[[str, int, str], Awaitable[bool]]
+
+
+class AutoMod:
+    def __init__(
+        self,
+        db: Database,
+        settings: LiveSettings,
+        status: RuntimeStatus,
+        *,
+        announce: Announce,
+        delete_message: DeleteMessage,
+        timeout_user: TimeoutUser,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._db = db
+        self._settings = settings
+        self._status = status
+        self._announce = announce
+        self._delete = delete_message
+        self._timeout = timeout_user
+        self.matcher = TermMatcher()
+        self.allowed_domains: list[str] = []
+        self.strikes = StrikeTracker(clock)
+        self.permits = PermitBook(clock)
+        self._warned = CooldownTracker(clock)
+
+    async def load(self) -> None:
+        self.matcher.set_terms(await self._db.list_filter_values(KIND_TERM))
+        self.allowed_domains = await self._db.list_filter_values(KIND_DOMAIN)
+
+    # -- list management (chat commands) ----------------------------------
+
+    async def add_term(self, term: str, by: str) -> bool:
+        added = await self._db.add_filter_value(KIND_TERM, normalize_for_matching(term).strip(), by)
+        await self.load()
+        return added
+
+    async def remove_term(self, term: str) -> bool:
+        removed = await self._db.remove_filter_value(KIND_TERM, normalize_for_matching(term).strip())
+        await self.load()
+        return removed
+
+    async def add_domain(self, domain: str, by: str) -> str | None:
+        host = normalize_domain(domain)
+        if "." not in host:
+            return None
+        await self._db.add_filter_value(KIND_DOMAIN, host, by)
+        await self.load()
+        return host
+
+    async def remove_domain(self, domain: str) -> bool:
+        removed = await self._db.remove_filter_value(KIND_DOMAIN, normalize_domain(domain))
+        await self.load()
+        return removed
+
+    def permit(self, login: str, seconds: int) -> None:
+        self.permits.grant(login, seconds)
+
+    # -- text the bot repeats ---------------------------------------------
+
+    REMOVED = "[removed]"
+
+    def scrub(self, text: str, limit: int = 100) -> str:
+        """Makes viewer-supplied text safe for the bot to say in its own voice.
+
+        AutoMod never inspects the bot's messages, so anything it echoes
+        ({args} in a custom command, the name typed after !give or !duel)
+        would otherwise carry a blocked word or a link past every filter. A
+        value that trips the term or link list is replaced outright rather than
+        partly censored, which is easy to evade; control and invisible
+        characters are dropped and the length is capped. Applies regardless
+        of the filter toggles: it isn't moderation of the viewer, it's the
+        bot declining to repeat something.
+        """
+        cleaned = "".join(c for c in text if c.isprintable() or c == " ").strip()
+        cleaned = " ".join(cleaned.split())[:limit]
+        if not cleaned:
+            return cleaned
+        if self.matcher.find(cleaned) or find_link(cleaned, self.allowed_domains):
+            return self.REMOVED
+        return cleaned
+
+    # -- the policy -------------------------------------------------------
+
+    async def inspect(self, event: ChatEvent) -> Violation | None:
+        if event.is_moderator or not event.text:  # mods and the broadcaster are never filtered
+            return None
+        toggles = self._settings.toggles
+        if not (toggles.link_filter_enabled or toggles.caps_filter_enabled or toggles.term_filter_enabled):
+            return None
+        if (toggles.filter_exempt_vips and event.is_vip) or (toggles.filter_exempt_subs and event.is_subscriber):
+            return None
+        tunables = self._settings.tunables
+        violation = evaluate(
+            event.text,
+            fragments=event.fragments,
+            link_on=toggles.link_filter_enabled,
+            caps_on=toggles.caps_filter_enabled,
+            term_on=toggles.term_filter_enabled,
+            caps_threshold_percent=tunables.caps_threshold_percent,
+            allowed_domains=self.allowed_domains,
+            matcher=self.matcher,
+            may_post_links=self.permits.active(event.login),
+        )
+        if violation is None:
+            return None
+
+        detail = f" ({violation.detail})" if violation.detail else ""
+        log.info("AutoMod: %s violation by %s (%s)%s.", violation.reason, event.name, event.user_id, detail)
+        strikes = self.strikes.record(event.user_id, tunables.filter_strike_window_seconds)
+        missing = self._status.scopes_missing
+        if toggles.filter_delete_enabled and "delete" not in missing and event.message_id:
+            await self._delete(event.message_id)
+        can_timeout = toggles.filter_timeout_enabled and "timeout" not in self._status.scopes_missing
+        if can_timeout and strikes >= tunables.filter_strikes_before_timeout:
+            if await self._timeout(event.user_id, tunables.filter_timeout_seconds, f"Chat filter ({violation.reason})"):
+                self.strikes.clear(event.user_id)
+                await self._announce(f"@{event.name} timed out for {tunables.filter_timeout_seconds}s.")
+                return violation
+        if self._warned.remaining(event.user_id, tunables.filter_warning_cooldown_seconds) == 0:
+            self._warned.mark(event.user_id)
+            warning = self._warning(event.name, violation)
+            if can_timeout and strikes == tunables.filter_strikes_before_timeout - 1:
+                warning += " Next one is a timeout."
+            await self._announce(warning)
+        return violation
+
+    @staticmethod
+    def _warning(name: str, violation: Violation) -> str:
+        if violation.reason == REASON_TERM:
+            return f"@{name} that word isn't allowed here."
+        if violation.reason == REASON_LINK:
+            return f"@{name} links aren't allowed — ask a mod for a !permit."
+        if violation.reason == REASON_CAPS:
+            return f"@{name} easy on the caps!"
+        return f"@{name} please follow the chat rules."

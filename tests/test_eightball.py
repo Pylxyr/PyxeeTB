@@ -1,6 +1,6 @@
 import random
 
-from twitch_radio.eightball import ANSWERS, answer
+from pyxeetb.eightball import ANSWERS, answer
 
 
 def test_answer_is_always_one_of_the_known_lines():

@@ -1,11 +1,11 @@
 import random
 
-from conftest import run
-from twitch_radio.chatevent import ChatEvent
-from twitch_radio.economy import (
+from conftest import make_settings, run
+from pyxeetb.chatevent import ChatEvent
+from pyxeetb.economy import (
     Economy, bits_points, format_duration, parse_bet, points_for_tick, rank_for,
 )
-from twitch_radio.runtime import RuntimeStatus
+from pyxeetb.runtime import RuntimeStatus
 
 
 def test_rank_progression():
@@ -50,26 +50,26 @@ class _Rng(random.Random):
         return self.value
 
 
-def _economy(db, stores, *, live=True, rng=None, clock=None):
-    tunables, toggles = stores
+def _economy(db, settings, *, live=True, rng=None, clock=None):
     status = RuntimeStatus()
 
     async def is_live():
         return live
 
-    return Economy(db, tunables, toggles, status, is_live=is_live, rng=rng, clock=clock or (lambda: 0.0)), status
+    return Economy(db, settings, status, is_live=is_live, rng=rng, clock=clock or (lambda: 0.0)), status
 
 
 def _event(uid="1", name="Alice", sub=False):
     return ChatEvent(user_id=uid, login=name.lower(), name=name, text="hi", is_subscriber=sub)
 
 
-def test_award_tick_pays_active_chatters_only_while_live(make_db, stores):
+def test_award_tick_pays_active_chatters_only_while_live(make_db):
     async def go():
         db = await make_db()
+        settings = await make_settings(db)
         now = [0.0]
-        economy, status = _economy(db, stores, clock=lambda: now[0])
-        await stores[0].update(lambda d: {**d, "points_per_active_minute": 2, "sub_multiplier_percent": 200})
+        economy, status = _economy(db, settings, clock=lambda: now[0])
+        await settings.update(points_per_active_minute=2, sub_multiplier_percent=200)
         economy.note_activity(_event("1", "Alice"))
         economy.note_activity(_event("2", "Bob", sub=True))
         assert await economy.award_tick() == 2
@@ -78,34 +78,36 @@ def test_award_tick_pays_active_chatters_only_while_live(make_db, stores):
         assert status.last_award_tick_at is not None
         now[0] = 400  # both idle for > 5 minutes
         assert await economy.award_tick() == 0
-        offline, _ = _economy(db, stores, live=False)
+        offline, _ = _economy(db, settings, live=False)
         offline.note_activity(_event("3", "Cy"))
         assert await offline.award_tick() == 0 and await db.get_stats("3") is None
 
     run(go())
 
 
-def test_gamble_rules(make_db, stores):
+def test_gamble_rules(make_db):
     async def go():
         db = await make_db()
-        economy, _ = _economy(db, stores, rng=_Rng(0.10))  # 10 < 45 -> always wins
+        settings = await make_settings(db)
+        economy, _ = _economy(db, settings, rng=_Rng(0.10))  # 10 < 45 -> always wins
         assert "turned off" in await economy.gamble("1", "Alice", "10")
-        await stores[1].update(lambda d: {**d, "gamble_enabled": True})
+        await settings.update(gamble_enabled=True)
         await db.credit("1", "Alice", 100)
         assert "WON 40" in await economy.gamble("1", "Alice", "40")
         assert (await db.get_stats("1"))["points"] == 140
         assert "cool down" in await economy.gamble("1", "Alice", "10")  # cooldown is on the wall clock of `clock`
-        loser, _ = _economy(db, stores, rng=_Rng(0.99))
+        loser, _ = _economy(db, settings, rng=_Rng(0.99))
         assert "lost 40" in await loser.gamble("1", "Alice", "40")
         assert (await db.get_stats("1"))["points"] == 100
 
     run(go())
 
 
-def test_give_daily_and_events(make_db, stores):
+def test_give_daily_and_events(make_db):
     async def go():
         db = await make_db()
-        economy, _ = _economy(db, stores)
+        settings = await make_settings(db)
+        economy, _ = _economy(db, settings)
         await db.credit("1", "Alice", 50)
         await db.credit("2", "Bob", 0)
         assert "haven't seen" in await economy.give("1", "Alice", "@Nobody", "5")
@@ -113,7 +115,7 @@ def test_give_daily_and_events(make_db, stores):
         assert "Usage" in await economy.give("1", "Alice", "bob", "-3")
         assert "gave 20 points to Bob" in await economy.give("1", "Alice", "@bob", "20")
         assert "Slow down" in await economy.give("1", "Alice", "bob", "1")
-        assert "only have 30" in await _fresh(db, stores).give("1", "Alice", "bob", "100")
+        assert "only have 30" in await _fresh(db, settings).give("1", "Alice", "bob", "100")
         assert "claimed 50" in await economy.daily("2", "Bob")
         assert "already claimed" in await economy.daily("2", "Bob")
         assert await economy.on_follow("9", "New") == 10
@@ -127,14 +129,15 @@ def test_give_daily_and_events(make_db, stores):
     run(go())
 
 
-def _fresh(db, stores):
-    return _economy(db, stores)[0]
+def _fresh(db, settings):
+    return _economy(db, settings)[0]
 
 
-def test_points_and_rank_lines(make_db, stores):
+def test_points_and_rank_lines(make_db):
     async def go():
         db = await make_db()
-        economy, _ = _economy(db, stores)
+        settings = await make_settings(db)
+        economy, _ = _economy(db, settings)
         assert "0 points" in await economy.points_line("1", "Alice")
         await db.bulk_award([("1", "Alice", 5, 3700)])
         assert "5 points, 1h 1m watched (Regular)" in await economy.points_line("1", "Alice")

@@ -3,12 +3,11 @@ server, no event loop needed, since they're plain functions over plain
 data. Mostly presence/absence checks rather than exact-markup matches, so
 these don't break on every minor styling tweak."""
 
-from twitch_radio.admin.render.commands_page import build_commands_page
-from twitch_radio.admin.render.settings_page import LiveStatus, render_settings_page
-from twitch_radio.db import Counter, CustomCommand, TimerRow
-from twitch_radio.specs import PCSpecs, Peripherals
-from twitch_radio.toggles import FeatureToggles
-from twitch_radio.tunables import TwitchTunables
+from pyxeetb.admin.render.commands_page import build_commands_page
+from pyxeetb.admin.render.settings_page import LiveStatus, render_settings_page
+from pyxeetb.db import Counter, CustomCommand, TimerRow
+from pyxeetb.toggles import FeatureToggles
+from pyxeetb.tunables import TwitchTunables
 
 
 def _settings_html(**community_overrides):
@@ -16,8 +15,6 @@ def _settings_html(**community_overrides):
     community.update(community_overrides)
     return render_settings_page(
         tunables=TwitchTunables(),
-        pc_specs=PCSpecs(),
-        peripherals=Peripherals(),
         toggles=FeatureToggles(),
         community=community,
         broadcast_info={"Chat command prefix": "!"},
@@ -63,7 +60,7 @@ def test_settings_page_omits_empty_sections():
 
 def test_settings_page_shows_a_banner_message():
     kwargs = dict(
-        tunables=TwitchTunables(), pc_specs=PCSpecs(), peripherals=Peripherals(), toggles=FeatureToggles(),
+        tunables=TwitchTunables(), toggles=FeatureToggles(),
         community={"top_points": [], "custom_commands": []}, broadcast_info={}, status=LiveStatus(0), has_logo=False,
     )
     ok_html = render_settings_page(**kwargs, message="Saved.", error=False)
@@ -98,7 +95,7 @@ def test_commands_page_without_counters_has_no_counters_category():
 
 
 def test_commands_page_truncates_long_custom_descriptions():
-    from twitch_radio.admin.render.commands_page import _MAX_CUSTOM_DESCRIPTION
+    from pyxeetb.admin.render.commands_page import _MAX_CUSTOM_DESCRIPTION
 
     long_response = "x" * (_MAX_CUSTOM_DESCRIPTION + 50)
     custom = [CustomCommand(name="long", response=long_response)]
@@ -121,3 +118,14 @@ def test_commands_page_does_not_publish_role_restricted_responses():
     assert "SECRET-SUB-INVITE" not in html and "hunter2" not in html
     assert "subdiscord" in html and "modnote" in html  # but the commands themselves are still listed
     assert "Available to subscribers only." in html and "Available to moderators only." in html
+
+
+def test_settings_page_shows_command_usage():
+    html = _settings_html(usage=[("points", 12, 0.0), ("8ball", 3, 0.0)], usage_since=1_700_000_000.0)
+    assert "Command usage" in html and "!points" in html and ">12<" in html
+    assert "Counting since 2023-11-14" in html
+    assert "Not used yet" in html  # commands that never ran are listed too
+
+
+def test_settings_page_without_usage_explains_itself():
+    assert "No commands used yet" in _settings_html()

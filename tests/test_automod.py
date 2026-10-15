@@ -1,11 +1,11 @@
-from conftest import run
-from twitch_radio.automod import AutoMod
-from twitch_radio.chatevent import ChatEvent
-from twitch_radio.runtime import RuntimeStatus
+from conftest import make_settings, run
+from pyxeetb.automod import AutoMod
+from pyxeetb.chatevent import ChatEvent
+from pyxeetb.runtime import RuntimeStatus
 
 
 class Harness:
-    def __init__(self, db, stores):
+    def __init__(self, db, settings):
         self.said, self.deleted, self.timeouts = [], [], []
         self.now = [0.0]
         self.status = RuntimeStatus()
@@ -21,35 +21,37 @@ class Harness:
             self.timeouts.append((user_id, seconds))
             return True
 
-        self.stores = stores
+        self.settings = settings
         self.mod = AutoMod(
-            db, stores[0], stores[1], self.status,
+            db, settings, self.status,
             announce=announce, delete_message=delete, timeout_user=timeout, clock=lambda: self.now[0],
         )
 
     async def toggles(self, **flags):
-        await self.stores[1].update(lambda d: {**d, **flags})
+        await self.settings.update(**flags)
 
     async def tunables(self, **values):
-        await self.stores[0].update(lambda d: {**d, **values})
+        await self.settings.update(**values)
 
 
 def _msg(text, uid="7", name="Spammer", **kw):
     return ChatEvent(user_id=uid, login=name.lower(), name=name, text=text, message_id="m1", **kw)
 
 
-def test_nothing_happens_when_all_filters_are_off(make_db, stores):
+def test_nothing_happens_when_all_filters_are_off(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         assert await h.mod.inspect(_msg("visit spam.com")) is None
         assert h.said == []
 
     run(go())
 
 
-def test_link_warning_delete_and_exemptions(make_db, stores):
+def test_link_warning_delete_and_exemptions(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(link_filter_enabled=True, filter_delete_enabled=True)
         assert (await h.mod.inspect(_msg("visit spam.com"))).reason == "link"
         assert h.deleted == ["m1"] and "links aren't allowed" in h.said[0]
@@ -62,9 +64,10 @@ def test_link_warning_delete_and_exemptions(make_db, stores):
     run(go())
 
 
-def test_permit_and_allowlist(make_db, stores):
+def test_permit_and_allowlist(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(link_filter_enabled=True)
         h.mod.permit("spammer", 60)
         assert await h.mod.inspect(_msg("visit spam.com")) is None
@@ -77,9 +80,10 @@ def test_permit_and_allowlist(make_db, stores):
     run(go())
 
 
-def test_warning_cooldown_limits_chat_spam(make_db, stores):
+def test_warning_cooldown_limits_chat_spam(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(caps_filter_enabled=True)
         for _ in range(5):
             assert await h.mod.inspect(_msg("STOP SHOUTING RIGHT NOW")) is not None
@@ -91,9 +95,10 @@ def test_warning_cooldown_limits_chat_spam(make_db, stores):
     run(go())
 
 
-def test_repeat_offender_is_timed_out(make_db, stores):
+def test_repeat_offender_is_timed_out(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(caps_filter_enabled=True, filter_timeout_enabled=True)
         await h.tunables(filter_strikes_before_timeout=3, filter_warning_cooldown_seconds=0)
         await h.mod.inspect(_msg("STOP SHOUTING RIGHT NOW"))
@@ -107,9 +112,10 @@ def test_repeat_offender_is_timed_out(make_db, stores):
     run(go())
 
 
-def test_missing_scopes_disable_actions(make_db, stores):
+def test_missing_scopes_disable_actions(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(caps_filter_enabled=True, filter_delete_enabled=True, filter_timeout_enabled=True)
         await h.tunables(filter_strikes_before_timeout=1)
         h.status.scopes_missing.update({"delete", "timeout"})
@@ -119,9 +125,10 @@ def test_missing_scopes_disable_actions(make_db, stores):
     run(go())
 
 
-def test_blocked_terms_via_commands_api(make_db, stores):
+def test_blocked_terms_via_commands_api(make_db):
     async def go():
-        h = Harness(await make_db(), stores)
+        db = await make_db()
+        h = Harness(db, await make_settings(db))
         await h.toggles(term_filter_enabled=True)
         assert await h.mod.add_term("Heck", "1") and not await h.mod.add_term("heck", "1")
         assert (await h.mod.inspect(_msg("oh HECK no"))).reason == "term"

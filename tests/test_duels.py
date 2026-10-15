@@ -1,7 +1,7 @@
 import random
 
 from conftest import run
-from twitch_radio.duels import DuelManager
+from pyxeetb.duels import DuelManager
 
 
 def test_cannot_duel_yourself(make_db):

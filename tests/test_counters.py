@@ -1,5 +1,5 @@
 from conftest import run
-from twitch_radio.counters import CounterStore, split_suffix
+from pyxeetb.counters import CounterStore, split_suffix
 
 
 def test_split_suffix():

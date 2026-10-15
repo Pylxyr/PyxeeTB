@@ -1,4 +1,4 @@
-from twitch_radio.cooldown import CooldownTracker
+from pyxeetb.cooldown import CooldownTracker
 
 
 def test_per_chatter_keys_cannot_grow_without_bound():

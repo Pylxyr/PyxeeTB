@@ -1,4 +1,4 @@
-from twitch_radio.filters import (
+from pyxeetb.filters import (
     PermitBook, StrikeTracker, TermMatcher, evaluate, find_link, is_shouting, normalize_domain, visible_text,
 )
 

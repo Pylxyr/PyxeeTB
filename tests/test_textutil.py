@@ -1,7 +1,7 @@
 import pytest
 
-from twitch_radio.economy import parse_bet
-from twitch_radio.textutil import parse_int, parse_uint
+from pyxeetb.economy import parse_bet
+from pyxeetb.textutil import parse_int, parse_uint
 
 
 @pytest.mark.parametrize("text", ["²", "①", "٣", "١٢", "9" * 13, "", " ", "-5", "1.5", "1e3", "0x10", "٣٤"])

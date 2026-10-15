@@ -6,8 +6,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from twitch_radio.db import Database  # noqa: E402
-from twitch_radio.store import JsonStore  # noqa: E402
+from pyxeetb.db import Database  # noqa: E402
+from pyxeetb.settings import LiveSettings  # noqa: E402
 
 
 def run(coro):
@@ -30,6 +30,8 @@ def make_db(tmp_path):
         run(db.close())
 
 
-@pytest.fixture
-def stores(tmp_path):
-    return JsonStore(tmp_path / "tunables.json"), JsonStore(tmp_path / "toggles.json")
+async def make_settings(db):
+    """A LiveSettings backed by `db`, loaded (all defaults)."""
+    settings = LiveSettings(db)
+    await settings.load()
+    return settings

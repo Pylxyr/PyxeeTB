@@ -1,6 +1,6 @@
 
 from conftest import run
-from twitch_radio.maintenance import backup_once, list_backups, prune_backups
+from pyxeetb.maintenance import backup_once, list_backups, prune_backups
 
 
 def test_backup_creates_a_restorable_copy_and_prunes(make_db, tmp_path):

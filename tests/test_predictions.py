@@ -1,6 +1,6 @@
 
 from conftest import run
-from twitch_radio.predictions import CreatedPrediction, PredictionManager, parse_start_args
+from pyxeetb.predictions import CreatedPrediction, PredictionManager, parse_start_args
 
 
 def test_parse_start_args():

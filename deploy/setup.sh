@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Installs the Twitch radio service, and optionally Caddy in front of it.
-# Non-interactive Caddy setup: CADDY_DOMAIN=radio.example.com [CADDY_EMAIL=you@example.com] deploy/setup.sh
+# Installs the PyxeeTB service, and optionally Caddy in front of it.
+# Non-interactive Caddy setup: CADDY_DOMAIN=bot.example.com [CADDY_EMAIL=you@example.com] deploy/setup.sh
 set -euo pipefail
 
 RED=$'\033[0;31m'; GREEN=$'\033[0;32m'; YELLOW=$'\033[1;33m'; CYAN=$'\033[0;36m'; RESET=$'\033[0m'
@@ -71,27 +71,29 @@ generate_password() {
   openssl rand -hex 12 2>/dev/null || head -c16 /dev/urandom | base64 | tr -dc 'a-zA-Z0-9' | head -c20
 }
 
-hash_password_for_env() {  # prints a scrypt hash of $1, or $1 itself if hashing fails
-  local hashed=""
-  hashed="$(cd "${APP_DIR}" && PW="$1" "${APP_DIR}/.venv/bin/python" -c 'import os; from twitch_radio.admin.passwords import hash_password; print(hash_password(os.environ["PW"]))' 2>/dev/null)" || hashed=""
-  printf '%s' "${hashed:-$1}"
-}
-
-prompt_settings_password() {
-  local pw=""
+prompt_admin_login() {  # sets ADMIN_USER / ADMIN_HASH for Caddy's basic_auth on /settings
+  local site="$1" existing="" pw=""
+  ADMIN_USER="admin"
+  existing="$(sudo awk '$1 == "admin" && NF == 2 {print $2; exit}' "${site}" 2>/dev/null || true)"
+  if [[ -n "${existing}" ]]; then
+    info "Keeping the existing /settings sign-in (username: admin)."
+    ADMIN_HASH="${existing}"
+    return 0
+  fi
   echo ""
-  echo "${CYAN}TWITCH_SETTINGS_PASSWORD${RESET}"
-  echo "  Sign-in password for /settings. Required once the bot is reachable from the internet."
-  read -r -s -p "  Value (input hidden, Enter to auto-generate one): " pw || true
+  echo "${CYAN}/settings sign-in${RESET}"
+  echo "  Caddy asks for this (username: admin) before showing the settings page."
+  read -r -s -p "  Password (input hidden, Enter to auto-generate one): " pw || true
   echo ""
   pw="$(trim "${pw}")"
   if [[ -z "${pw}" ]]; then
     pw="$(generate_password)"
     echo "  Generated: ${pw}"
-    echo "  It is stored hashed in .env — write this one down."
+    echo "  Only a hash is stored (in the Caddy config) — write this one down."
   fi
-  set_env_var "TWITCH_SETTINGS_PASSWORD" "$(hash_password_for_env "${pw}")" "${ENV_PATH}"
-  success "TWITCH_SETTINGS_PASSWORD saved."
+  # caddy hash-password only takes the plaintext as an argument when not on a
+  # terminal, so it is briefly visible to other local users in `ps`.
+  ADMIN_HASH="$(caddy hash-password --plaintext "${pw}")" || return 1
 }
 
 prompt_caddy_site() {
@@ -139,16 +141,21 @@ install_caddy() {
 }
 
 configure_caddy() {  # configure_caddy PORT
-  local port="$1" main="/etc/caddy/Caddyfile" site="/etc/caddy/conf.d/twitch-radio.caddy"
+  local port="$1" main="/etc/caddy/Caddyfile" site="/etc/caddy/conf.d/pyxeetb.caddy"
   local import_line="import /etc/caddy/conf.d/*.caddy"
   sudo mkdir -p /etc/caddy/conf.d || return 1
+  # The pre-rename site file would define the same domain twice and Caddy would refuse to load.
+  sudo rm -f /etc/caddy/conf.d/twitch-radio.caddy
+  prompt_admin_login "${site}" || return 1
   sed -e "s#__SITE_ADDRESS__#${SITE_ADDRESS}#g" -e "s#__UPSTREAM__#127.0.0.1:${port}#g" \
+    -e "s#__ADMIN_USER__#${ADMIN_USER}#g" -e "s#__ADMIN_HASH__#${ADMIN_HASH}#g" \
     "${APP_DIR}/deploy/Caddyfile" | sudo tee "${site}" >/dev/null || return 1
+  sudo chmod 600 "${site}" || return 1
 
   if ! sudo grep -qsF "${import_line}" "${main}"; then
     if ! sudo test -s "${main}" || sudo grep -q 'root \* /usr/share/caddy' "${main}"; then
       if sudo test -s "${main}"; then
-        sudo cp "${main}" "${main}.pre-twitch-radio" || return 1
+        sudo cp "${main}" "${main}.pre-pyxeetb" || return 1
       fi
       {
         if [[ -n "${CADDY_EMAIL}" ]]; then
@@ -291,12 +298,12 @@ prompt_optional_field() {
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_USER="${SUDO_USER:-$(whoami)}"
-SERVICE_NAME="twitch-radio"
+SERVICE_NAME="pyxeetb"
 ENV_PATH="${APP_DIR}/.env"
 SITE_ADDRESS="${CADDY_DOMAIN:-}"
 CADDY_EMAIL="${CADDY_EMAIL:-}"
 
-echo "Twitch Radio Bot — setup"
+echo "PyxeeTB — setup"
 echo "App directory: ${APP_DIR}"
 echo "Service user:  ${SERVICE_USER}"
 echo ""
@@ -319,10 +326,10 @@ fi
 
 echo "[1/7] Installing system packages"
 sudo apt update
-sudo apt install -y python3 python3-venv logrotate curl unzip openssl
+sudo apt install -y python3 python3-venv curl unzip openssl
 
 echo "[2/7] Preparing app directories"
-mkdir -p "${APP_DIR}/data" "${APP_DIR}/logs"
+mkdir -p "${APP_DIR}/data"
 
 echo "[3/7] Creating virtual environment"
 if [[ ! -d "${APP_DIR}/.venv" ]]; then
@@ -409,9 +416,6 @@ else
     info "TWITCH_HTTP_HOST is already set — leaving it alone."
     prompt_optional_field TWITCH_HTTP_PORT "8098" 0 1 \
       "— Port for the HTTP surface (1024-65535)."
-    prompt_optional_field TWITCH_SETTINGS_PASSWORD "" 1 0 \
-      "— Sign-in password for /settings. Required once the bot is reachable" \
-      "    from anywhere but this machine."
   else
     set_env_var "TWITCH_HTTP_HOST" "127.0.0.1" "${ENV_PATH}"
     success "TWITCH_HTTP_HOST = 127.0.0.1 (Caddy is the only thing that faces the internet)"
@@ -433,39 +437,30 @@ else
     want_caddy="${want_caddy:-${default_caddy}}"
     if [[ "${want_caddy}" =~ ^[Yy] ]]; then
       prompt_caddy_site
-      prompt_settings_password
-    else
-      prompt_optional_field TWITCH_SETTINGS_PASSWORD "" 1 0 \
-        "— Sign-in password for /settings. Only needed if you later put" \
-        "    the bot behind a reverse proxy."
     fi
   fi
-
-  echo ""
-  echo "${CYAN}-- Advanced: state filenames (only for multiple instances) --${RESET}"
-  prompt_optional_field TWITCH_TOKEN_FILE "twitch_tokens.json" 0 0 \
-    "— Under data/. No reason to change unless running >1 instance from one data/."
-  prompt_optional_field TWITCH_TUNABLES_FILE "tunables.json" 0 0 \
-    "— Same as above, for the /settings tunables."
 
   echo ""
   echo "${CYAN}-- Logging --${RESET}"
   prompt_optional_field LOG_LEVEL "INFO" 0 0 \
     "— DEBUG/INFO/WARNING/ERROR/CRITICAL."
-  prompt_optional_field LOG_TO_FILE "true" 0 0 \
-    "— Also write logs/twitch-radio.log (rotated weekly) alongside journalctl."
   echo ""
 fi
 
-echo "[6/7] Installing logrotate config and systemd unit"
+echo "[6/7] Installing the systemd unit"
+# Installs from before the PyxeeTB rename ran as "twitch-radio" with a logrotate
+# config. Retire them (data/ is untouched) so two services never fight over the
+# same database and port.
+if [[ -f /etc/systemd/system/twitch-radio.service ]]; then
+  warn "Found the old twitch-radio service — stopping and removing it (your data/ is untouched)."
+  sudo systemctl disable --now twitch-radio >/dev/null 2>&1 || true
+  sudo rm -f /etc/systemd/system/twitch-radio.service /etc/logrotate.d/twitch-radio
+fi
 # Template the path/user instead of installing verbatim — otherwise a custom
 # APP_DIR/SERVICE_USER silently doesn't take effect here even though the
 # rest of the install honors it.
-sed -e "s#/home/ubuntu/twitch-radio-bot#${APP_DIR}#g" \
-    -e "s#su ubuntu ubuntu#su ${SERVICE_USER} ${SERVICE_USER}#" \
-    "${APP_DIR}/deploy/${SERVICE_NAME}-logrotate" | sudo tee "/etc/logrotate.d/${SERVICE_NAME}" >/dev/null
 sed \
-  -e "s#/home/ubuntu/twitch-radio-bot#${APP_DIR}#g" \
+  -e "s#/home/ubuntu/pyxeetb#${APP_DIR}#g" \
   -e "s#User=ubuntu#User=${SERVICE_USER}#" \
   "${APP_DIR}/deploy/${SERVICE_NAME}.service" | sudo tee "/etc/systemd/system/${SERVICE_NAME}.service" >/dev/null
 sudo systemctl daemon-reload
@@ -483,10 +478,6 @@ elif install_caddy && configure_caddy "${bot_port}"; then
     set_env_var "TWITCH_PUBLIC_BASE_URL" "https://${SITE_ADDRESS}" "${ENV_PATH}"
   fi
   success "Caddy is serving https://${SITE_ADDRESS} -> 127.0.0.1:${bot_port}"
-  if [[ -z "$(get_env_var "TWITCH_SETTINGS_PASSWORD" "${ENV_PATH}")" ]]; then
-    warn "No TWITCH_SETTINGS_PASSWORD set — /settings will refuse everyone arriving through Caddy."
-    warn "Set one with: ${APP_DIR}/.venv/bin/python ${APP_DIR}/bot.py --hash-password"
-  fi
   open_web_ports "${bot_port}"
 else
   error "Caddy setup failed. The bot itself is installed; fix the error above and re-run this script."
@@ -513,7 +504,7 @@ echo "     sudo systemctl enable --now ${SERVICE_NAME}"
 echo ""
 echo "3. Complete the one-time OAuth authorization — the service can't chat"
 echo "   or read chat until this is done. Full walkthrough in README.md, or"
-echo "   the module docstring in twitch_radio/chatbot.py. Short version:"
+echo "   the module docstring in pyxeetb/chatbot.py. Short version:"
 echo "     ssh -L 4343:localhost:4343 ${SERVICE_USER}@<this-host>"
 echo "   then, in a browser:"
 echo "     - as the BOT account:"
@@ -527,7 +518,7 @@ echo ""
 if [[ "${caddy_ok}" -eq 1 ]]; then
   echo "4. Viewers can browse commands at https://${SITE_ADDRESS}/commands, and (optionally)"
   echo "   add a Browser Source in OBS pointed at https://${SITE_ADDRESS}/chat-overlay."
-  echo "   Sign in to settings at https://${SITE_ADDRESS}/login."
+  echo "   Settings: https://${SITE_ADDRESS}/settings (username admin, the password you just set)."
 else
   echo "4. Commands page: http://127.0.0.1:${bot_port}/commands"
   echo "   (optionally) add a Browser Source in OBS pointed at /chat-overlay — see README.md."

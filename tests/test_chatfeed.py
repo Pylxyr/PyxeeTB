@@ -1,4 +1,4 @@
-from twitch_radio.chatfeed import ChatFeed
+from pyxeetb.chatfeed import ChatFeed
 
 
 def test_remove_message_and_remove_user_take_entries_off_the_overlay():

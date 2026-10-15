@@ -5,25 +5,27 @@ that unit tests on the services alone cannot."""
 import contextlib
 from types import SimpleNamespace
 
-from conftest import run
-from twitch_radio.chatbot import TwitchChatBot
-from twitch_radio.chatfeed import ChatFeed
-from twitch_radio.runtime import RuntimeStatus
-from twitch_radio.store import JsonStore
+from conftest import make_settings, run
+from pyxeetb.chatbot import TwitchChatBot
+from pyxeetb.chatfeed import ChatFeed
+from pyxeetb.runtime import RuntimeStatus
 
 
 async def _bot(tmp_path, make_db, **kw):
     db = await make_db()
     bot = TwitchChatBot(
         client_id="x", client_secret="y", bot_id="100", owner_id="200", prefix="!", public_base_url=None,
-        chat_feed=ChatFeed(), tunables_store=JsonStore(tmp_path / "t.json"), specs_store=JsonStore(tmp_path / "s.json"),
-        toggles_store=JsonStore(tmp_path / "g.json"), db=db, token_storage_path=tmp_path / "tok.json",
-        status=RuntimeStatus(), emote_sources=(), **kw,
+        chat_feed=ChatFeed(), settings=await make_settings(db), db=db, token_storage_path=tmp_path / "tok.json",
+        status=RuntimeStatus(), **kw,
     )
 
     async def _noop():
         return None
 
+    async def _no_cheermotes():
+        return []
+
+    bot.cheermotes._fetcher = _no_cheermotes  # no network in tests
     bot._try_subscribe_chat = _noop  # type: ignore[method-assign]
     bot._try_subscribe_alerts = _noop  # type: ignore[method-assign]
     await bot.setup_hook()
@@ -31,7 +33,7 @@ async def _bot(tmp_path, make_db, **kw):
 
 
 async def _shutdown(bot):
-    for task in (bot._points_task,):
+    for task in (bot._points_task, bot._usage_task, bot._cheermotes_task):
         if task:
             task.cancel()
     for component in list(bot._components.values()) if hasattr(bot, "_components") else []:
@@ -39,9 +41,15 @@ async def _shutdown(bot):
             await component.component_teardown()
 
 
+def _component(bot, cls):
+    """The component of type `cls` as the bot wires it."""
+    return next(c for c in bot.build_components() if isinstance(c, cls))
+
+
 def _chatter(uid="1", name="Alice", **roles):
     return SimpleNamespace(id=uid, name=name.lower(), display_name=name, moderator=roles.get("moderator", False),
-                           vip=roles.get("vip", False), subscriber=roles.get("subscriber", False))
+                           vip=roles.get("vip", False), subscriber=roles.get("subscriber", False),
+                           broadcaster=roles.get("broadcaster", False))
 
 
 def test_all_components_register_without_collisions(tmp_path, make_db):
@@ -61,7 +69,7 @@ def test_chat_message_flows_to_feed_economy_and_automod(tmp_path, make_db):
     async def go():
         bot = await _bot(tmp_path, make_db)
         try:
-            await bot.toggles_store.update(lambda d: {**d, "link_filter_enabled": True, "filter_delete_enabled": True})
+            await bot.settings.update(link_filter_enabled=True, filter_delete_enabled=True)
             sent, deleted = [], []
 
             async def fake_announce(text):
@@ -71,8 +79,8 @@ def test_chat_message_flows_to_feed_economy_and_automod(tmp_path, make_db):
                 deleted.append(message_id)
                 return True
 
-            bot.announce = fake_announce  # type: ignore[method-assign]
-            bot.delete_message = fake_delete  # type: ignore[method-assign]
+            bot.actions.announce = fake_announce  # type: ignore[method-assign]
+            bot.actions.delete_message = fake_delete  # type: ignore[method-assign]
             bot.automod._announce = fake_announce
             bot.automod._delete = fake_delete
 
@@ -126,9 +134,9 @@ def test_live_state_events_drive_session_summary(tmp_path, make_db):
             async def fake_announce(text):
                 said.append(text)
 
-            bot.announce = fake_announce  # type: ignore[method-assign]
-            await bot.toggles_store.update(lambda d: {**d, "stream_summary_enabled": True})
-            await bot.event_stream_online(None)  # type: ignore[arg-type]
+            bot.actions.announce = fake_announce  # type: ignore[method-assign]
+            await bot.settings.update(stream_summary_enabled=True)
+            await bot.event_stream_online(SimpleNamespace(started_at=None))  # type: ignore[arg-type]
             assert bot.status.live.is_live is True
             await bot.economy.on_follow("5", "Newbie")
             await bot.event_stream_offline(None)  # type: ignore[arg-type]
@@ -146,8 +154,10 @@ def test_reply_suffixes_are_configurable(tmp_path, make_db):
     async def go():
         plain = await _bot(tmp_path, make_db, reply_suffixes=())
         try:
-            assert plain._decorate("hi") == "hi"
-            assert len(plain._decorate("x" * 900)) == 500
+            decorate = plain.actions._decorator.decorate
+            assert decorate("hi") == "hi"
+            assert decorate("hi") == "hi"  # no suffixes configured: a repeat goes out as is
+            assert len(decorate("x" * 900)) == 500
         finally:
             await _shutdown(plain)
 
@@ -184,9 +194,9 @@ def test_commands_listing_includes_custom_commands_and_counters(tmp_path, make_d
     async def go():
         bot = await _bot(tmp_path, make_db)
         try:
-            from twitch_radio.components.info import InfoComponent
+            from pyxeetb.components.info import InfoComponent
 
-            component = InfoComponent(bot)
+            component = _component(bot, InfoComponent)
             replies = []
 
             async def reply(text):
@@ -210,9 +220,9 @@ def test_counter_list_subcommand(tmp_path, make_db):
     async def go():
         bot = await _bot(tmp_path, make_db)
         try:
-            from twitch_radio.components.counters import CountersComponent
+            from pyxeetb.components.counters import CountersComponent
 
-            component = CountersComponent(bot)
+            component = _component(bot, CountersComponent)
             replies = []
 
             async def reply(text):
@@ -237,9 +247,9 @@ def test_addcom_and_counter_add_cannot_shadow_each_other(tmp_path, make_db):
         bot = await _bot(tmp_path, make_db)
         try:
             await bot.custom.save("hi", "hello", "1")
-            from twitch_radio.components.counters import CountersComponent
+            from pyxeetb.components.counters import CountersComponent
 
-            component = CountersComponent(bot)
+            component = _component(bot, CountersComponent)
             replies = []
 
             async def reply(text):

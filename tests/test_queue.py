@@ -1,4 +1,4 @@
-from twitch_radio.queue import ViewerQueue
+from pyxeetb.queue import ViewerQueue
 
 
 def test_join_leave_and_position():

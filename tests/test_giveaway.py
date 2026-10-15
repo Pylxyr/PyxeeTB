@@ -1,6 +1,6 @@
 import random
 
-from twitch_radio.giveaway import GiveawayManager
+from pyxeetb.giveaway import GiveawayManager
 
 
 def test_no_giveaway_running():

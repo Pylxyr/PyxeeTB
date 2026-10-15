@@ -1,5 +1,5 @@
-from twitch_radio.cooldown import CooldownTracker
-from twitch_radio.runtime import LiveState, RuntimeStatus
+from pyxeetb.cooldown import CooldownTracker
+from pyxeetb.runtime import LiveState, RuntimeStatus
 
 
 def test_cooldown_uses_injected_clock():

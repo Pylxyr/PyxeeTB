@@ -8,14 +8,13 @@ import socket
 from contextlib import asynccontextmanager
 
 import aiohttp
-from conftest import run
+from conftest import make_settings, run
 
-from twitch_radio.admin.app import run_admin_server
-from twitch_radio.admin.security import ConnectionLimiter
-from twitch_radio.chatfeed import ChatFeed
-from twitch_radio.netutil import host_without_port, parse_networks, rate_limit_key
-from twitch_radio.runtime import RuntimeStatus
-from twitch_radio.store import JsonStore
+from pyxeetb.admin.app import run_admin_server
+from pyxeetb.admin.security import ConnectionLimiter
+from pyxeetb.chatfeed import ChatFeed
+from pyxeetb.netutil import host_without_port, parse_networks, rate_limit_key
+from pyxeetb.runtime import RuntimeStatus
 
 
 def _free_port() -> int:
@@ -25,23 +24,18 @@ def _free_port() -> int:
 
 
 @asynccontextmanager
-async def _server(tmp_path, make_db, *, password=None):
+async def _server(tmp_path, make_db):
     db = await make_db()
     port = _free_port()
     runner = await run_admin_server(
         chat_feed=ChatFeed(),
         status=RuntimeStatus(),
-        tunables_store=JsonStore(tmp_path / "tunables.json"),
-        specs_store=JsonStore(tmp_path / "specs.json"),
-        toggles_store=JsonStore(tmp_path / "toggles.json"),
+        settings=await make_settings(db),
         db=db,
-        settings_password=password,
         broadcast_info={},
         host="127.0.0.1",
         port=port,
         trusted_proxies=parse_networks("127.0.0.1/32")[0],
-        session_hours=12,
-        session_remember_days=30,
     )
     try:
         yield f"http://127.0.0.1:{port}", runner
@@ -90,7 +84,7 @@ def test_websocket_connections_are_capped_per_client(tmp_path, make_db):
     run(go())
 
 
-def test_passwordless_settings_requires_a_loopback_host_header(tmp_path, make_db):
+def test_direct_settings_access_requires_a_loopback_host_header(tmp_path, make_db):
     """DNS rebinding: the attacker's page reaches us with Host: attacker.example, and an
     Origin that matches it, so only the Host itself can give it away."""
 
@@ -111,37 +105,58 @@ def test_passwordless_settings_requires_a_loopback_host_header(tmp_path, make_db
     run(go())
 
 
-def test_login_turns_away_extra_concurrent_verifications(tmp_path, make_db, monkeypatch):
-    import threading
-
-    from twitch_radio.admin.handlers import login as login_mod
-
-    release = threading.Event()
-    seen = []
-
-    def slow_verify(password, stored):
-        seen.append(password)
-        release.wait(5)
-        return False
-
-    monkeypatch.setattr(login_mod, "verify_password", slow_verify)
+def test_settings_through_the_proxy_needs_the_proxys_sign_in(tmp_path, make_db):
+    """Caddy's basic_auth sets X-Authenticated-User; a proxied request without it is refused."""
 
     async def go():
-        async with _server(tmp_path, make_db, password="secret") as (base, _), aiohttp.ClientSession() as http:
-            headers = {"Origin": base}
-
-            async def attempt(i):
-                resp = await http.post(f"{base}/login", data={"password": f"p{i}"}, headers=headers)
-                return resp.status
-
-            tasks = [asyncio.create_task(attempt(i)) for i in range(2)]
-            await asyncio.sleep(0.3)  # both verifications are now running
-            assert await attempt(99) == 429  # the third is refused, not queued
-            release.set()
-            assert sorted(await asyncio.gather(*tasks)) == [401, 401]
-            assert "p99" not in seen
+        async with _server(tmp_path, make_db) as (base, _), aiohttp.ClientSession() as http:
+            proxied = {"X-Forwarded-For": "203.0.113.9", "X-Forwarded-Host": "bot.example.com"}
+            refused = await http.get(f"{base}/settings", headers=proxied)
+            assert refused.status == 403
+            signed_in = await http.get(f"{base}/settings", headers={**proxied, "X-Authenticated-User": "admin"})
+            assert signed_in.status == 200
 
     run(go())
+
+
+def test_saving_settings_through_the_proxy_checks_origin_and_stores_to_the_database(tmp_path, make_db):
+    async def go():
+        async with _server(tmp_path, make_db) as (base, runner), aiohttp.ClientSession() as http:
+            ctx = next(iter(runner.app.values()))
+            headers = {
+                "X-Forwarded-For": "203.0.113.9",
+                "X-Forwarded-Host": "bot.example.com",
+                "X-Authenticated-User": "admin",
+            }
+            form = {"gamble_max_bet": "123", "alerts_enabled": "on"}  # partial POST: only named toggles change
+            cross_site = await http.post(
+                f"{base}/settings", data=form, headers={**headers, "Origin": "https://evil.example"}
+            )
+            assert cross_site.status == 403 and ctx.settings.tunables.gamble_max_bet == 500
+            ok = await http.post(
+                f"{base}/settings", data=form, headers={**headers, "Origin": "https://bot.example.com"}
+            )
+            assert ok.status == 200
+            assert ctx.settings.tunables.gamble_max_bet == 123 and ctx.settings.toggles.alerts_enabled
+            assert await ctx.db.load_settings() == {"tunable.gamble_max_bet": "123", "toggle.alerts_enabled": "true"}
+            bad = await http.post(f"{base}/settings", data={**form, "gamble_max_bet": "abc"}, headers={
+                **headers, "Origin": "https://bot.example.com"})
+            assert bad.status == 400 and ctx.settings.tunables.gamble_max_bet == 123  # nothing half-saved
+
+    run(go())
+
+
+def test_a_forged_sign_in_header_from_an_untrusted_address_is_ignored():
+    from types import SimpleNamespace
+
+    from pyxeetb.admin.handlers.auth import authorize
+
+    ctx = SimpleNamespace(trusted_proxies=parse_networks("127.0.0.1/32")[0], exposed=True)
+    request = SimpleNamespace(
+        headers={"X-Authenticated-User": "admin", "Host": "bot.example.com"}, remote="198.51.100.7"
+    )
+    denied = authorize(ctx, request)  # type: ignore[arg-type]
+    assert denied is not None and denied.status == 403
 
 
 def test_rate_limit_key_groups_ipv6_by_64_and_leaves_ipv4_alone():

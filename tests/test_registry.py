@@ -1,11 +1,11 @@
 import re
 from pathlib import Path
 
-from twitch_radio.commands_reference import BY_NAME
-from twitch_radio.toggles import TOGGLE_KEYS, FeatureToggles
-from twitch_radio.tunables import TUNABLE_BOUNDS, TUNABLE_GROUPS, TUNABLE_LABELS, TwitchTunables
+from pyxeetb.commands_reference import BY_NAME
+from pyxeetb.toggles import TOGGLE_KEYS, FeatureToggles
+from pyxeetb.tunables import TUNABLE_BOUNDS, TUNABLE_GROUPS, TUNABLE_LABELS, TwitchTunables
 
-COMPONENTS = Path(__file__).resolve().parent.parent / "twitch_radio" / "components"
+COMPONENTS = Path(__file__).resolve().parent.parent / "pyxeetb" / "components"
 _CMD = re.compile(r'@commands\.command\(name="(\w+)"(?:,\s*aliases=\[([^\]]*)\])?')
 
 

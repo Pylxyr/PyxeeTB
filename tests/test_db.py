@@ -5,7 +5,7 @@ from conftest import run
 
 
 def test_migrates_a_v1_database_in_place(tmp_path):
-    from twitch_radio.db import SCHEMA_VERSION, Database
+    from pyxeetb.db import SCHEMA_VERSION, Database
 
     path = tmp_path / "old.db"
     conn = sqlite3.connect(path)
