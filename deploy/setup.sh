@@ -150,7 +150,14 @@ configure_caddy() {  # configure_caddy PORT
   sed -e "s#__SITE_ADDRESS__#${SITE_ADDRESS}#g" -e "s#__UPSTREAM__#127.0.0.1:${port}#g" \
     -e "s#__ADMIN_USER__#${ADMIN_USER}#g" -e "s#__ADMIN_HASH__#${ADMIN_HASH}#g" \
     "${APP_DIR}/deploy/Caddyfile" | sudo tee "${site}" >/dev/null || return 1
-  sudo chmod 600 "${site}" || return 1
+  # Caddy's service runs as the "caddy" user, so a root-only file makes every
+  # reload fail with "permission denied" (validate passes because it runs as root).
+  # Group-readable by caddy keeps the password hash private from other users.
+  if getent group caddy >/dev/null 2>&1; then
+    sudo chown root:caddy "${site}" && sudo chmod 640 "${site}" || return 1
+  else
+    sudo chmod 600 "${site}" || return 1
+  fi
 
   if ! sudo grep -qsF "${import_line}" "${main}"; then
     if ! sudo test -s "${main}" || sudo grep -q 'root \* /usr/share/caddy' "${main}"; then
@@ -175,7 +182,13 @@ configure_caddy() {  # configure_caddy PORT
     return 1
   fi
   sudo systemctl enable caddy >/dev/null 2>&1 || true
-  sudo systemctl reload-or-restart caddy || return 1
+  if ! sudo systemctl reload-or-restart caddy; then
+    error "Caddy failed to start or reload. Last log lines:"
+    sudo journalctl -u caddy -n 15 --no-pager || true
+    echo "  Ports in use on 80/443:"
+    sudo ss -ltnp '( sport = :80 or sport = :443 )' || true
+    return 1
+  fi
 }
 
 open_web_ports() {
