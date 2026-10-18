@@ -5,9 +5,10 @@ public /commands webpage (grouped into tabs by `category`). Same pattern
 as tunables.py's TUNABLE_BOUNDS/TUNABLE_LABELS and toggles.py's
 TOGGLE_KEYS: add a command here once, every consumer picks it up.
 
-`public=False` hides a command from chat's !commands listing while still
-documenting it on /settings — nothing currently uses it, but a future
-mod-only command that shouldn't be advertised to every viewer can opt in.
+`public=False` hides a command from chat's !commands listing and from the
+public commands page (GitHub Pages and /commands) while still documenting it
+on /settings. The owner-only custom-command commands (addcom, comopt, delcom)
+use it, so nothing about custom commands is advertised to viewers.
 `category` only affects the /commands page's tab layout, never
 visibility — every public=True command still shows there regardless of
 `group`.
@@ -104,14 +105,15 @@ COMMANDS: tuple[CommandInfo, ...] = (
         category="Moderator Tools",
     ),
     CommandInfo(
-        name="addcom", aliases=("editcom",), group="moderators", who="Moderators",
+        name="addcom", aliases=("editcom",), group="moderators", who="Broadcaster only",
         usage="<name> <response text>",
-        description="Adds or edits a custom command. Variables: {user} {touser} {args} {count} {channel}.",
-        category="Moderator Tools",
+        description="Adds or edits a custom command (broadcaster-only to manage and to run). "
+                    "Variables: {user} {touser} {args} {count} {channel}.",
+        category="Moderator Tools", public=False,
     ),
     CommandInfo(
-        name="comopt", group="moderators", who="Moderators", usage="<name> cd <seconds|default> | role <everyone|sub|vip|mod>",
-        description="Sets a custom command's cooldown or who may use it.", category="Moderator Tools",
+        name="comopt", group="moderators", who="Broadcaster only", usage="<name> cd <seconds|default>",
+        description="Sets a custom command's cooldown.", category="Moderator Tools", public=False,
     ),
     CommandInfo(
         name="timer", group="moderators", who="Moderators",
@@ -134,8 +136,8 @@ COMMANDS: tuple[CommandInfo, ...] = (
         category="Moderator Tools",
     ),
     CommandInfo(
-        name="delcom", group="moderators", who="Moderators", usage="<name>",
-        description="Removes a custom command.", category="Moderator Tools",
+        name="delcom", group="moderators", who="Broadcaster only", usage="<name>",
+        description="Removes a custom command.", category="Moderator Tools", public=False,
     ),
     CommandInfo(
         name="counter", group="moderators", who="Moderators", usage="add|del|set|public <name> [value] | list",

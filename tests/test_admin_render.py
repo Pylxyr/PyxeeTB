@@ -5,7 +5,7 @@ these don't break on every minor styling tweak."""
 
 from pyxeetb.admin.render.commands_page import build_commands_page
 from pyxeetb.admin.render.settings_page import LiveStatus, render_settings_page
-from pyxeetb.db import Counter, CustomCommand, TimerRow
+from pyxeetb.db import Counter, TimerRow
 from pyxeetb.toggles import FeatureToggles
 from pyxeetb.tunables import TwitchTunables
 
@@ -69,17 +69,21 @@ def test_settings_page_shows_a_banner_message():
     assert "banner-ok" in ok_html and "banner-error" in error_html
 
 
-def test_commands_page_lists_every_category_and_custom_commands():
-    custom = [CustomCommand(name="hi", response="Hello {user}!", uses=3, cooldown_seconds=-1, min_role="subscriber")]
-    html = build_commands_page("!", has_logo=False, custom=custom)
-    for category in ("Points & Leaderboard", "Games & Fun", "Stream Info", "Moderator Tools", "Custom Commands"):
-        assert category in html
-    assert "!hi" in html and "Subscribers" in html
-
-
-def test_commands_page_without_custom_commands_has_no_custom_category():
+def test_commands_page_lists_every_built_in_category_and_no_custom_commands():
     html = build_commands_page("!", has_logo=False)
+    for category in ("Points & Leaderboard", "Games & Fun", "Stream Info", "Moderator Tools"):
+        assert category in html
     assert "Custom Commands" not in html
+
+
+def test_commands_page_does_not_accept_or_show_custom_commands():
+    import inspect
+
+    assert "custom" not in inspect.signature(build_commands_page).parameters
+    html = build_commands_page("!", has_logo=False)
+    # The owner-only management commands are not advertised to viewers either.
+    for hidden in ("!addcom", "!editcom", "!delcom", "!comopt"):
+        assert hidden not in html, hidden
 
 
 def test_commands_page_lists_counters_with_permission_hint():
@@ -92,32 +96,6 @@ def test_commands_page_lists_counters_with_permission_hint():
 def test_commands_page_without_counters_has_no_counters_category():
     html = build_commands_page("!", has_logo=False)
     assert "Counters" not in html
-
-
-def test_commands_page_truncates_long_custom_descriptions():
-    from pyxeetb.admin.render.commands_page import _MAX_CUSTOM_DESCRIPTION
-
-    long_response = "x" * (_MAX_CUSTOM_DESCRIPTION + 50)
-    custom = [CustomCommand(name="long", response=long_response)]
-    html = build_commands_page("!", has_logo=False, custom=custom)
-    assert "x" * (_MAX_CUSTOM_DESCRIPTION + 50) not in html
-    assert "\u2026" in html
-
-
-def test_commands_page_does_not_publish_role_restricted_responses():
-    html = build_commands_page(
-        "!",
-        has_logo=False,
-        custom=[
-            CustomCommand("hello", "Hi there, public text", 0, -1, "everyone"),
-            CustomCommand("subdiscord", "Sub-only invite: https://discord.gg/SECRET-SUB-INVITE", 0, -1, "subscriber"),
-            CustomCommand("modnote", "Mod-only: the alt account password is hunter2", 0, -1, "moderator"),
-        ],
-    )
-    assert "Hi there, public text" in html  # public commands are shown in full
-    assert "SECRET-SUB-INVITE" not in html and "hunter2" not in html
-    assert "subdiscord" in html and "modnote" in html  # but the commands themselves are still listed
-    assert "Available to subscribers only." in html and "Available to moderators only." in html
 
 
 def test_settings_page_shows_command_usage():

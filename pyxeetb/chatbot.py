@@ -52,6 +52,8 @@ from pyxeetb.components.stream_info import StreamInfoComponent
 from pyxeetb.components.timers import TimersComponent
 from pyxeetb.counters import CounterStore, split_suffix
 from pyxeetb.customcommands import CustomCommandStore
+from pyxeetb.emotes import PROVIDERS as EMOTE_PROVIDERS
+from pyxeetb.emotes import EmoteService
 from pyxeetb.db import Database
 from pyxeetb.duels import DuelManager
 from pyxeetb.economy import AWARD_TICK_SECONDS, Economy
@@ -102,6 +104,7 @@ class TwitchChatBot(commands.Bot):
         status: RuntimeStatus,
         reply_suffixes: tuple[str, ...] = DEFAULT_REPLY_SUFFIXES,
         reserved_commands: frozenset[str] = frozenset(),
+        emote_providers: tuple[str, ...] = EMOTE_PROVIDERS,
     ) -> None:
         super().__init__(
             client_id=client_id,
@@ -115,8 +118,9 @@ class TwitchChatBot(commands.Bot):
         self.db = db
         self.status = status
         self.prefix = prefix
-        # Set only when TWITCH_PUBLIC_BASE_URL is configured — !commands falls
-        # back to the terse in-chat listing when this is None.
+        # Defaults to the GitHub Pages commands page (config.DEFAULT_PUBLIC_BASE_URL);
+        # None only when TWITCH_PUBLIC_BASE_URL=none — then !commands falls back to
+        # the terse in-chat listing.
         self.public_commands_url = f"{public_base_url}/commands" if public_base_url else None
         self._channel_id = owner_id
         self._bot_account_id = bot_id
@@ -130,6 +134,7 @@ class TwitchChatBot(commands.Bot):
         self._points_task: asyncio.Task[None] | None = None
         self._usage_task: asyncio.Task[None] | None = None
         self._cheermotes_task: asyncio.Task[None] | None = None
+        self._emotes_task: asyncio.Task[None] | None = None
 
         # Services (the logic) — the components are thin command layers over these.
         self.actions = TwitchActions(
@@ -137,6 +142,8 @@ class TwitchChatBot(commands.Bot):
         )
         self.stream = StreamState(status, self._read_stream, on_live_start=lambda: self.economy.reset_session())
         self.cheermotes = CheermoteService(self._fetch_cheermotes)
+        # 7TV / BTTV / FFZ: own aiohttp session and refresh task, never on the chat path.
+        self.emotes = EmoteService(broadcaster_id=owner_id, sources=emote_providers)
         self.throttle = CommandThrottle()
         self.usage = UsageCounter()
         self.economy = Economy(
@@ -347,13 +354,14 @@ class TwitchChatBot(commands.Bot):
         self._points_task = asyncio.create_task(self._points_award_loop(), name="points-award-loop")
         self._usage_task = asyncio.create_task(self._usage_flush_loop(), name="command-usage")
         self._cheermotes_task = asyncio.create_task(self.cheermotes.run(), name="cheermotes")
+        self._emotes_task = asyncio.create_task(self.emotes.run(), name="chat-emotes")
 
     def build_components(self) -> list[commands.Component]:
         """The command layers, each handed exactly the services it uses."""
         reply, announce = self.actions.safe_reply, self.actions.announce
         return [
             ModerationComponent(reply, self.settings, self.automod),
-            InfoComponent(reply, self.prefix, self.public_commands_url, self.custom, self.counters),
+            InfoComponent(reply, self.prefix, self.public_commands_url, self.counters),
             EconomyComponent(reply, self.economy, self.db, self.automod),
             CustomCommandsComponent(reply, self.custom, self.counters, self.reserved_names),
             TimersComponent(
@@ -409,7 +417,9 @@ class TwitchChatBot(commands.Bot):
             return
         name = display_name_of(chatter)
         try:
-            fragments: list[dict[str, object]] = self.cheermotes.decorate(fragments_to_dicts(message.fragments))
+            fragments: list[dict[str, object]] = self.cheermotes.decorate(
+                self.emotes.decorate(fragments_to_dicts(message.fragments))
+            )
         except Exception:
             # Emote artwork is cosmetic: the message still reaches the overlay
             # (and the filters) as plain text.
@@ -503,9 +513,7 @@ class TwitchChatBot(commands.Bot):
             args=args,
             channel=str(channel),
             default_cooldown=tunables.custom_command_cooldown_seconds,
-            subscriber=bool(getattr(chatter, "subscriber", False)),
-            vip=bool(getattr(chatter, "vip", False)),
-            moderator=bool(getattr(chatter, "moderator", False)),
+            owner=bool(getattr(chatter, "broadcaster", False)),
             sanitize=lambda text: self.automod.scrub(text, 200),
         )
         if reply is None:
@@ -569,11 +577,11 @@ class TwitchChatBot(commands.Bot):
         object during shutdown, so bot.py creates and closes the database itself
         after the HTTP surface is down. `**options` (e.g. `save_tokens`) passes
         straight through to commands.Bot.close/Client.close."""
-        for task in (self._points_task, self._usage_task, self._cheermotes_task):
+        for task in (self._points_task, self._usage_task, self._cheermotes_task, self._emotes_task):
             if task is not None:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await task
-        self._points_task = self._usage_task = self._cheermotes_task = None
+        self._points_task = self._usage_task = self._cheermotes_task = self._emotes_task = None
         await self.usage.flush(self.db)
         await super().close(**options)

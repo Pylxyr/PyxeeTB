@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from pyxeetb.emotes import PROVIDERS as EMOTE_PROVIDERS
 from pyxeetb.fsutil import private_dir
 from pyxeetb.netutil import DEFAULT_TRUSTED_PROXIES, IPNetwork, parse_networks
 from pyxeetb.runtime import DEFAULT_REPLY_SUFFIXES
@@ -14,6 +15,11 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
 
 load_dotenv(BASE_DIR / ".env")
+
+# Where !commands / !help send viewers by default: the static, built-in-commands-only
+# GitHub Pages site that .github/workflows/pages.yml rebuilds on every push to main
+# (the page lives at <base>/commands). Forks override it with TWITCH_PUBLIC_BASE_URL.
+DEFAULT_PUBLIC_BASE_URL = "https://pylxyr.github.io/PyxeeTB"
 
 
 
@@ -46,6 +52,39 @@ def _reply_suffixes_env(name: str) -> tuple[str, ...]:
 def _command_names_env(name: str) -> frozenset[str]:
     """Comma-separated command names (with or without the prefix) another bot answers to."""
     return frozenset(t.strip().lstrip("!").lower() for t in os.getenv(name, "").split(",") if t.strip().lstrip("!"))
+
+
+def _emote_providers_env(name: str) -> tuple[str, ...]:
+    """Comma-separated third-party emote providers for the chat overlay.
+    Unset = all of them (7tv, bttv, ffz); "none" turns third-party emotes off."""
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return EMOTE_PROVIDERS
+    if raw in ("none", "off", "false", "0"):
+        return ()
+    wanted = [t.strip() for t in raw.split(",") if t.strip()]
+    unknown = [t for t in wanted if t not in EMOTE_PROVIDERS]
+    if unknown:
+        print(f"WARNING: {name} has unknown providers {', '.join(unknown)} — ignoring them (known: {', '.join(EMOTE_PROVIDERS)}).")
+    return tuple(p for p in EMOTE_PROVIDERS if p in wanted)
+
+
+def _public_base_url_env(name: str) -> str | None:
+    """Base URL (no trailing slash) the public commands page is under; !commands
+    links to `<base>/commands`. Unset = the GitHub Pages default, so no per-deploy
+    .env edit is needed. "none" turns the link off (terse in-chat listing)."""
+    raw = os.getenv(name, "").strip().rstrip("/")
+    if not raw:
+        return DEFAULT_PUBLIC_BASE_URL
+    if raw.lower() in ("none", "off", "false", "0"):
+        return None
+    if not raw.startswith(("http://", "https://")):
+        # print(), not log — this runs before configure_logging() exists.
+        print(f"WARNING: {name}={raw!r} has no http(s):// scheme — using the default {DEFAULT_PUBLIC_BASE_URL}.")
+        return DEFAULT_PUBLIC_BASE_URL
+    if raw.startswith("http://"):
+        print(f"WARNING: {name}={raw!r} uses http://, not https:// — this is the link every viewer gets from !commands.")
+    return raw
 
 
 def _bool_env(name: str, default: bool) -> bool:
@@ -94,10 +133,11 @@ class Settings:
     http_host: str
     http_port: int
     trusted_proxies: tuple[IPNetwork, ...]
-    # Public base URL for the /commands link (no trailing slash); None if unset.
+    # Base URL of the public commands page (no trailing slash); None = link disabled.
     public_base_url: str | None
     reply_suffixes: tuple[str, ...]
     reserved_commands: frozenset[str]
+    emote_providers: tuple[str, ...]
     db_backup_keep: int
     backup_dir: Path
 
@@ -147,19 +187,7 @@ def load_settings() -> Settings:
             f"them: {', '.join(rejected_proxies)}"
         )
 
-    public_base_url = os.getenv("TWITCH_PUBLIC_BASE_URL", "").strip().rstrip("/") or None
-    if public_base_url is not None and not public_base_url.startswith(("http://", "https://")):
-        print(
-            f"WARNING: TWITCH_PUBLIC_BASE_URL={public_base_url!r} has no http(s):// scheme — "
-            f"ignoring it. !commands will use the terse in-chat listing instead of a link."
-        )
-        public_base_url = None
-    elif public_base_url is not None and public_base_url.startswith("http://"):
-        print(
-            f"WARNING: TWITCH_PUBLIC_BASE_URL={public_base_url!r} uses http://, not https:// — "
-            f"this is the link every viewer gets from !commands, so it's worth serving over TLS. "
-            f"See the README's \"Publishing with Caddy\" section."
-        )
+    public_base_url = _public_base_url_env("TWITCH_PUBLIC_BASE_URL")
 
     return Settings(
         client_id=client_id,
@@ -173,6 +201,7 @@ def load_settings() -> Settings:
         public_base_url=public_base_url,
         reply_suffixes=_reply_suffixes_env("TWITCH_REPLY_SUFFIXES"),
         reserved_commands=_command_names_env("TWITCH_RESERVED_COMMANDS"),
+        emote_providers=_emote_providers_env("TWITCH_EMOTE_PROVIDERS"),
         db_backup_keep=_clamped_int_env("TWITCH_DB_BACKUP_KEEP", 7, 0, 90),
         backup_dir=DATA_DIR / "backups",
         token_path=DATA_DIR / "twitch_tokens.json",

@@ -1,18 +1,11 @@
 from conftest import run
-from pyxeetb.customcommands import CustomCommandStore, clean_name, normalize_role, render_response, role_allows
+from pyxeetb.customcommands import CustomCommandStore, clean_name, render_response
 from pyxeetb.timers import TimerScheduler, parse_add
 from pyxeetb.db import TimerRow
 
 
-def test_names_and_roles():
+def test_names():
     assert clean_name("!Discord") == "discord" and clean_name("a b") is None and clean_name("x" * 26) is None
-    assert normalize_role("Subs") == "subscriber" and normalize_role("mod") == "moderator"
-    assert normalize_role("nope") is None
-    assert role_allows("everyone", subscriber=False, vip=False, moderator=False)
-    assert role_allows("subscriber", subscriber=True, vip=False, moderator=False)
-    assert not role_allows("vip", subscriber=True, vip=False, moderator=False)
-    assert role_allows("moderator", subscriber=False, vip=False, moderator=True)
-    assert not role_allows("moderator", subscriber=True, vip=True, moderator=False)
 
 
 def test_render_variables():
@@ -28,20 +21,31 @@ def test_store_execution_rules(make_db):
         store = CustomCommandStore(db, clock=lambda: now[0])
         await store.load()
         await store.save("hi", "Hello {user}! ({count})", "1")
-        kw = dict(user="Al", args="", channel="C", default_cooldown=3, subscriber=False, vip=False, moderator=False)
+        kw = dict(user="Al", args="", channel="C", default_cooldown=3, owner=True)
         assert await store.execute("hi", **kw) == "Hello Al! (1)"
         assert await store.execute("hi", **kw) is None  # cooling down, silently
         now[0] = 4
         assert await store.execute("hi", **kw) == "Hello Al! (2)"
         assert await store.execute("missing", **kw) is None
-        await store.set_option("hi", min_role="subscriber")
-        now[0] = 10
-        assert await store.execute("hi", **kw) is None
-        assert await store.execute("hi", **{**kw, "subscriber": True}) == "Hello Al! (3)"
-        await store.set_option("hi", cooldown_seconds=0, min_role="everyone")
+        await store.set_option("hi", cooldown_seconds=0)
         assert await store.execute("hi", **kw) and await store.execute("hi", **kw)
-        assert (await db.load_commands())[0].uses >= 5
+        assert (await db.load_commands())[0].uses >= 4
         assert await store.delete("hi") and store.get("hi") is None
+
+    run(go())
+
+
+def test_only_the_owner_can_run_a_custom_command(make_db):
+    async def go():
+        db = await make_db()
+        store = CustomCommandStore(db)
+        await store.load()
+        await store.save("hi", "Hello {user}!", "1")
+        kw = dict(user="Al", args="", channel="C", default_cooldown=0)
+        # A viewer, a moderator, a VIP or a subscriber all get silence — no reply, no error.
+        assert await store.execute("hi", owner=False, **kw) is None
+        assert store.get("hi").uses == 0  # and it doesn't count as a use
+        assert await store.execute("hi", owner=True, **kw) == "Hello Al!"
 
     run(go())
 

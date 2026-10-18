@@ -487,9 +487,9 @@ if [[ -z "${SITE_ADDRESS}" ]]; then
   info "Skipping. To add it later: CADDY_DOMAIN=radio.example.com ${BASH_SOURCE[0]}"
 elif install_caddy && configure_caddy "${bot_port}"; then
   caddy_ok=1
-  if [[ -z "$(get_env_var "TWITCH_PUBLIC_BASE_URL" "${ENV_PATH}")" ]]; then
-    set_env_var "TWITCH_PUBLIC_BASE_URL" "https://${SITE_ADDRESS}" "${ENV_PATH}"
-  fi
+  # TWITCH_PUBLIC_BASE_URL is deliberately NOT set here any more: !commands
+  # defaults to the GitHub Pages sheet (see pyxeetb/config.py), which needs no
+  # .env edit. Set it yourself only to point viewers at this bot instead.
   success "Caddy is serving https://${SITE_ADDRESS} -> 127.0.0.1:${bot_port}"
   open_web_ports "${bot_port}"
 else

@@ -1,0 +1,51 @@
+name: Pages
+
+# Rebuilds the public commands sheet on every push to main and publishes it to
+# https://pylxyr.github.io/PyxeeTB/commands  (built-in commands only — custom
+# commands are owner-only and never appear here).
+#
+# One-time repo setting: Settings -> Pages -> Source = "GitHub Actions".
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - run: pip install -r requirements.txt
+      - name: Build the static commands site
+        run: python -m pyxeetb.pages _site
+      - name: Check the page exists
+        run: test -s _site/commands/index.html
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

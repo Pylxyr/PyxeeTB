@@ -36,7 +36,7 @@ def test_custom_command_management(tmp_path, make_db):
         bot = await _bot(tmp_path, make_db, reserved_commands=frozenset({"sr"}))
         try:
             chat = _Chat(_component(bot, CustomCommandsComponent))
-            mod = chat.ctx("9", "Mod", moderator=True)
+            mod = chat.ctx("9", "Owner", broadcaster=True)
             assert "Usage: !addcom" in await chat.call("add_command_cmd", mod, args="onlyname")
             assert "letters, numbers" in await chat.call("add_command_cmd", mod, args="bad-name hi")
             assert "already a command" in await chat.call("add_command_cmd", mod, args="points hi")  # a built-in
@@ -45,9 +45,8 @@ def test_custom_command_management(tmp_path, make_db):
             assert await chat.call("add_command_cmd", mod, args="hello Hi {user}!") == "Saved !hello."
             assert bot.custom.get("hello") is not None
             assert "100s cooldown" in await chat.call("command_options_cmd", mod, args="hello cd 100")
-            assert "role subscriber" in await chat.call("command_options_cmd", mod, args="hello role sub")
+            assert "Usage: !comopt" in await chat.call("command_options_cmd", mod, args="hello role sub")  # roles are gone
             assert "Cooldown must be" in await chat.call("command_options_cmd", mod, args="hello cd forever")
-            assert "Role must be" in await chat.call("command_options_cmd", mod, args="hello role king")
             assert "No custom command !ghost" in await chat.call("command_options_cmd", mod, args="ghost cd 5")
             assert await chat.call("del_command_cmd", mod, name="hello") == "Removed !hello."
             assert "No custom command !hello" in await chat.call("del_command_cmd", mod, name="hello")
@@ -55,6 +54,31 @@ def test_custom_command_management(tmp_path, make_db):
             await _shutdown(bot)
 
     run(go())
+
+
+def test_custom_command_management_is_guarded_to_the_broadcaster(tmp_path, make_db):
+    """The tests above call callbacks directly, which skips guards — so check
+    the guards themselves: a moderator (or anyone else) must fail them."""
+
+    async def go():
+        bot = await _bot(tmp_path, make_db)
+        try:
+            for name in ("addcom", "editcom", "delcom", "comopt"):
+                command = bot.commands[name]
+                assert command.guards, name
+                broadcaster = SimpleNamespace(id="42")
+                for chatter, allowed in ((SimpleNamespace(id="42"), True), (SimpleNamespace(id="7", moderator=True), False)):
+                    ctx = SimpleNamespace(chatter=chatter, broadcaster=broadcaster)
+                    results = [await _maybe_await(g(ctx)) for g in command.guards]
+                    assert all(results) is allowed, (name, chatter)
+        finally:
+            await _shutdown(bot)
+
+    run(go())
+
+
+async def _maybe_await(value):
+    return await value if hasattr(value, "__await__") else value
 
 
 def test_quote_commands(tmp_path, make_db):

@@ -8,13 +8,15 @@ from types import SimpleNamespace
 from conftest import make_settings, run
 from pyxeetb.chatbot import TwitchChatBot
 from pyxeetb.chatfeed import ChatFeed
+from pyxeetb.config import DEFAULT_PUBLIC_BASE_URL
 from pyxeetb.runtime import RuntimeStatus
 
 
 async def _bot(tmp_path, make_db, **kw):
     db = await make_db()
+    kw.setdefault("public_base_url", DEFAULT_PUBLIC_BASE_URL)
     bot = TwitchChatBot(
-        client_id="x", client_secret="y", bot_id="100", owner_id="200", prefix="!", public_base_url=None,
+        client_id="x", client_secret="y", bot_id="100", owner_id="200", prefix="!",
         chat_feed=ChatFeed(), settings=await make_settings(db), db=db, token_storage_path=tmp_path / "tok.json",
         status=RuntimeStatus(), **kw,
     )
@@ -113,11 +115,17 @@ def test_custom_command_runs_through_the_not_found_path(tmp_path, make_db):
             async def reply(text):
                 replies.append(text)
 
-            ctx = SimpleNamespace(content="!hello @Bob", chatter=_chatter(), broadcaster=SimpleNamespace(display_name="Chan"),
-                                  reply=reply)
-            assert await bot._try_custom_command(ctx, "hello")
+            owner = SimpleNamespace(content="!hello @Bob", chatter=_chatter(broadcaster=True),
+                                    broadcaster=SimpleNamespace(display_name="Chan"), reply=reply)
+            assert await bot._try_custom_command(owner, "hello")
             assert replies and replies[0].startswith("Hi Alice, Bob!")
-            assert not await bot._try_custom_command(ctx, "nothere")
+            assert not await bot._try_custom_command(owner, "nothere")
+            # Owner-only: a viewer, subscriber, VIP or moderator gets nothing.
+            bot.custom._cooldowns = type(bot.custom._cooldowns)()
+            for roles in ({}, {"subscriber": True}, {"vip": True}, {"moderator": True}):
+                other = SimpleNamespace(content="!hello", chatter=_chatter(**roles),
+                                        broadcaster=SimpleNamespace(display_name="Chan"), reply=reply)
+                assert not await bot._try_custom_command(other, "hello"), roles
             assert "sr" in bot.reserved_names  # another bot's command can't be shadowed
         finally:
             await _shutdown(bot)
@@ -190,9 +198,32 @@ def test_counter_view_and_increment_through_the_fallback_path(tmp_path, make_db)
     run(go())
 
 
-def test_commands_listing_includes_custom_commands_and_counters(tmp_path, make_db):
+def test_commands_replies_with_the_github_pages_url_by_default(tmp_path, make_db):
     async def go():
         bot = await _bot(tmp_path, make_db)
+        try:
+            from pyxeetb.components.info import InfoComponent
+
+            component = _component(bot, InfoComponent)
+            replies = []
+
+            async def reply(text):
+                replies.append(text)
+
+            await bot.custom.save("secret", "owner only", "1")
+            ctx = SimpleNamespace(chatter=_chatter(), reply=reply)
+            await component.commands_list.callback(component, ctx)
+            assert replies[-1].endswith("https://pylxyr.github.io/PyxeeTB/commands")
+            assert "secret" not in replies[-1]
+        finally:
+            await _shutdown(bot)
+
+    run(go())
+
+
+def test_commands_listing_never_lists_custom_commands_but_lists_counters(tmp_path, make_db):
+    async def go():
+        bot = await _bot(tmp_path, make_db, public_base_url=None)  # link disabled -> terse in-chat listing
         try:
             from pyxeetb.components.info import InfoComponent
 
@@ -209,7 +240,8 @@ def test_commands_listing_includes_custom_commands_and_counters(tmp_path, make_d
             await bot.custom.save("hi", "hello", "1")
             await bot.counters.create("deaths", "1")
             await component.commands_list.callback(component, ctx)
-            assert "custom: !hi" in replies[-1] and "counters: !deaths" in replies[-1]
+            assert "custom:" not in replies[-1] and "!hi" not in replies[-1]  # customs are owner-only, never listed
+            assert "counters: !deaths" in replies[-1]
         finally:
             await _shutdown(bot)
 
@@ -299,12 +331,12 @@ def test_custom_command_args_are_scrubbed_but_the_template_is_not(tmp_path, make
             await bot.automod.add_term("slur", "mod")
             await bot.custom.save("echo", "Join https://discord.gg/ours — you said: {args}", "1")
             ok = await bot.custom.execute("echo", user="A", args="hello  there", channel="c", default_cooldown=0,
-                                          subscriber=False, vip=False, moderator=False, sanitize=bot.automod.scrub)
+                                          owner=True, sanitize=bot.automod.scrub)
             assert ok == "Join https://discord.gg/ours — you said: hello there"  # mod's own link survives
             for evil in ("a slur here", "go to evil.com", "evil[.]com", "s\u200blur"):
                 bot.custom._cooldowns = type(bot.custom._cooldowns)()  # reset cooldown for the test
                 out = await bot.custom.execute("echo", user="A", args=evil, channel="c", default_cooldown=0,
-                                               subscriber=False, vip=False, moderator=False, sanitize=bot.automod.scrub)
+                                               owner=True, sanitize=bot.automod.scrub)
                 assert out == "Join https://discord.gg/ours — you said: [removed]", (evil, out)
         finally:
             await _shutdown(bot)

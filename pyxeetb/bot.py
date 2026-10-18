@@ -80,6 +80,7 @@ async def _async_run(settings: Settings) -> None:
                 status=status,
                 reply_suffixes=settings.reply_suffixes,
                 reserved_commands=settings.reserved_commands,
+                emote_providers=settings.emote_providers,
             )
             if settings.db_backup_keep > 0:
                 backup_task = asyncio.create_task(
@@ -166,7 +167,8 @@ def _check_config() -> int:
     if settings.public_base_url:
         print(f"  Public commands page: {settings.public_base_url}/commands (linked from !commands in chat)")
     else:
-        print("  Public commands page: not configured (TWITCH_PUBLIC_BASE_URL unset) — !commands uses the in-chat listing")
+        print("  Public commands page: disabled (TWITCH_PUBLIC_BASE_URL=none) — !commands uses the in-chat listing")
+    print(f"  Chat emote providers: {', '.join(settings.emote_providers) or 'none (Twitch emotes only)'}")
     token_status = "found" if settings.token_path.exists() else "missing — run OAuth setup before starting"
     print(f"  Token file: {settings.token_path} ({token_status})")
     print(f"  Community DB: {settings.db_path}")

@@ -11,7 +11,7 @@
 </p>
 
 A standalone Twitch chat bot for moderation, viewer engagement, and stream
-alerts — chat filters, a points/watch-time economy with mod-managed custom
+alerts — chat filters, a points/watch-time economy with owner-only custom
 commands, and optional follow/sub/raid announcements, plus a public
 `/commands` reference page and a `/settings` dashboard that your reverse
 proxy signs you in to.
@@ -41,10 +41,12 @@ proxy signs you in to.
   [Chat filters](#chat-filters-automod).
 - **Timers** — scheduled messages that post only while the channel is live
   and chat is actually active. See [Timers](#timers).
-- **Custom commands** — mod-managed, with `{user} {touser} {args} {count}
-  {channel}` variables, per-command cooldown and role (`!comopt`), a name
-  reserve list so they never clash with another bot, and automatic listing
-  on the public `/commands` page. See [Custom commands](#custom-commands).
+- **Custom commands** — **owner/broadcaster only** (only you can create,
+  edit, delete or run them; moderators and viewers can't), with `{user}
+  {touser} {args} {count} {channel}` variables, a per-command cooldown
+  (`!comopt`) and a name reserve list so they never clash with another
+  bot. They are never listed on the public commands page or in `!commands`.
+  See [Custom commands](#custom-commands).
 - **Alerts, shoutouts, clips & polls** — optional (off by default) chat
   announcements for follows/subs/cheers/raids with auto-shoutout on raid,
   plus `!uptime`/`!title`/`!game`/`!followage`/`!clip`/`!so`/`!poll`; each
@@ -62,10 +64,14 @@ proxy signs you in to.
 - **Chat overlay** (`/chat-overlay`) — a Browser Source showing recent chat
   on stream, last 10 messages or 10 minutes each, whichever's first; the
   bot's own messages never appear in it — see [Chat overlay](#chat-overlay).
-- **Public `/commands` page** — a searchable, categorized command
-  reference any viewer can open, including your custom commands, linked
-  from chat's `!commands` once `TWITCH_PUBLIC_BASE_URL` is set — see
+- **Public commands page** — a searchable, categorized reference of the
+  built-in commands, published as a static site to GitHub Pages at
+  <https://pylxyr.github.io/PyxeeTB/commands> on every push to `main`, and
+  linked from chat's `!commands` / `!help` by default — see
   [Public commands page](#public-commands-page).
+- **Auto-deploy** — a push to `main` updates the Oracle host over SSH and
+  restarts `pyxeetb` (`data/` is never touched) — see
+  [Auto-deploy](#auto-deploy-github-actions--ssh).
 - **`/settings` web page** — every tunable and feature toggle (grouped),
   command usage counts, a command reference and a read-only community
   dashboard, behind your reverse proxy's sign-in.
@@ -132,7 +138,8 @@ required; everything else has a default.
 | `TWITCH_HTTP_HOST` | `127.0.0.1` | HTTP bind address. Leave it on loopback and publish through [Caddy](#publishing-with-caddy) |
 | `TWITCH_HTTP_PORT` | `8098` | HTTP port, 1024–65535 |
 | `TWITCH_TRUSTED_PROXIES` | `127.0.0.1/32,::1/128` | IPs/CIDRs of reverse proxies whose `X-Forwarded-*` and `X-Authenticated-User` headers are believed |
-| `TWITCH_PUBLIC_BASE_URL` | unset | Externally-reachable base URL (e.g. `https://bot.example.com`), no trailing slash. When set, `!commands` links to `<url>/commands` instead of the terse in-chat listing — see [Public commands page](#public-commands-page) |
+| `TWITCH_PUBLIC_BASE_URL` | `https://pylxyr.github.io/PyxeeTB` | Base URL of the public commands page (no trailing slash); `!commands` / `!help` link to `<url>/commands`. The default is the GitHub Pages site, so there is nothing to set per deploy. Forks set their own Pages URL (or their bot's address). `none` switches to the terse in-chat listing. A value in `.env` wins over the default — see [Public commands page](#public-commands-page) |
+| `TWITCH_EMOTE_PROVIDERS` | `7tv,bttv,ffz` | Third-party emote providers the [chat overlay](#chat-overlay) loads; `none` = Twitch emotes and cheermotes only |
 | `TWITCH_RESERVED_COMMANDS` | unset | Comma-separated command names another bot answers to (`sr,skip,queue`); custom commands can't reuse them |
 | `TWITCH_REPLY_SUFFIXES` | `✨,💫,⭐,🌟` | Comma-separated suffixes the bot adds to a reply *only when it would repeat a message it just sent* (Twitch silently drops exact repeats); `none` disables |
 | `TWITCH_DB_BACKUP_KEEP` | `7` | Daily database backups to keep under `data/backups/`; `0` disables |
@@ -236,9 +243,9 @@ registered but not documented there (or the reverse).
 | `!<counter>` / `!<counter>++` / `!<counter>--` | anyone (view) / moderators or public counters (adjust) | Views or adjusts a counter created with `!counter add` |
 | `!setlimit <key> [value]` | moderators | Shows or sets a tunable live — same keys/ranges as `/settings` |
 | `!toggle <key> [on\|off]` | moderators | Flips a feature toggle, or sets it with `on`/`off` |
-| `!addcom <name> <response>` / `!editcom` | moderators | Adds or edits a custom command |
-| `!delcom <name>` | moderators | Removes a custom command |
-| `!comopt <name> cd <seconds\|default>` / `role <everyone\|sub\|vip\|mod>` | moderators | A custom command's cooldown / who may use it |
+| `!addcom <name> <response>` / `!editcom` | broadcaster only | Adds or edits a custom command (only the broadcaster can run it, too) |
+| `!delcom <name>` | broadcaster only | Removes a custom command |
+| `!comopt <name> cd <seconds\|default>` | broadcaster only | A custom command's cooldown |
 | `!counter add\|del\|set\|public <name> [value]` / `list` | moderators | Manages a named counter |
 | `!addquote <text>` / `!delquote <id>` | moderators | Adds or removes a quote |
 | `!timer add <name> <minutes> <message>` | moderators | Also `remove`, `on`, `off`, `min <name> <messages>`, `list` |
@@ -251,10 +258,12 @@ registered but not documented there (or the reverse).
 | `!poll <seconds> <question> ; <choice> ; <choice> [...]` | moderators | Native Twitch poll (2-5 choices, 15-1800s) — needs `channel:manage:polls` |
 | `!predict start <seconds> <title> ; <outcome> ; <outcome> [...]` | moderators | Also `lock`, `resolve <n>`, `cancel` — needs `channel:manage:predictions` |
 
-A non-moderator running a moderator command is ignored silently rather than
-told off in public chat. Any prefixed message the bot doesn't recognise is
-checked against custom commands with an in-memory lookup (no database query),
-so sharing the `!` prefix with another bot is cheap.
+A non-moderator running a moderator command (or anyone but the broadcaster
+running a broadcaster-only one) is ignored silently rather than told off in
+public chat. Any prefixed message the bot doesn't recognise is checked
+against custom commands (broadcaster only) and counters with an in-memory
+lookup (no database query), so sharing the `!` prefix with another bot is
+cheap.
 
 ## HTTP endpoints
 
@@ -291,21 +300,33 @@ public, since it's meant to be fetched by OBS or a browser without auth:
 
 ## Public commands page
 
-`/commands` is a small, self-contained page — a sidebar of categories
-(Points & Leaderboard, Games & Fun, Stream Info, Moderator Tools, plus
-Custom Commands / Counters whenever any exist), a live search box, and a
-card for every command with its usage, who can use it, and what it does.
-It shows exactly the same set chat's own `!commands` does — every
-built-in command currently happens to be shown in both places, but the
-underlying mechanism (`public=False` in `commands_reference.py`) still
-exists for a future mod-only command that shouldn't be advertised to
-every viewer.
+The public command sheet is a small, self-contained static page — a sidebar of
+categories (Points & Leaderboard, Games & Fun, Stream Info, Moderator Tools), a
+live search box, and a card for every command with its usage, who can use it
+and what it does. It lists the **built-in** commands marked `public=True` in
+`pyxeetb/commands_reference.py` — the same set chat's `!commands` draws on.
+**Custom commands are never on it** (they are owner-only, and the page builder
+doesn't even accept them), and neither are the owner-only `!addcom`,
+`!editcom`, `!delcom`, `!comopt` (`public=False`).
 
-Set `TWITCH_PUBLIC_BASE_URL` to your bot's externally-reachable address
-(a domain if you have one, or `http://<your-ip>:<port>` otherwise) and
-`!commands` in chat will link straight to it. Leave it unset and
-`!commands` falls back to the terse in-chat listing exactly as before —
-nothing breaks if you don't set this up.
+**It lives on GitHub Pages:** <https://pylxyr.github.io/PyxeeTB/commands>.
+`.github/workflows/pages.yml` rebuilds it (`python -m pyxeetb.pages _site`) and
+redeploys on every push to `main`. One-time repository setting: **Settings →
+Pages → Source = GitHub Actions**.
+
+**`!commands` / `!help` link to it by default** — `TWITCH_PUBLIC_BASE_URL`
+defaults to `https://pylxyr.github.io/PyxeeTB` and the link is that plus
+`/commands`, so no `.env` edit is needed after a commit. Forks set
+`TWITCH_PUBLIC_BASE_URL` to their own Pages URL (no trailing slash); `none`
+turns the link off and uses the terse in-chat listing. Note that an existing
+`TWITCH_PUBLIC_BASE_URL` line in `.env` (older `setup.sh` runs wrote one) wins
+over the default — delete it to use the Pages link. The deploy prints a notice
+when it finds one.
+
+The live `/settings` page, the chat overlay and the websockets stay on the bot
+(behind Caddy if you use it); Pages only hosts the public command sheet. The
+bot also still serves the same built-in page (plus counters) at its own
+`/commands` route, which is what the notes below describe.
 
 Because this is the one page on this server explicitly meant to be
 opened by everyone watching a stream rather than just the streamer or a
@@ -313,8 +334,8 @@ mod, it's held to a higher bar than the other public endpoints above:
 
 - **Read-only.** No form, no query parameter the server ever reads, no
   state anywhere. The page is built from the command list, the configured prefix and
-  the current custom commands/counters, cached for 30 seconds, and served
-  identically to every visitor.
+  the current counters, cached for 30 seconds, and served identically to every
+  visitor.
 - **Rate-limited** at 60 requests/minute per IP — generous for a person
   browsing, enough to blunt a script hammering the one route now linked
   to an entire channel's chat at once.
@@ -349,14 +370,40 @@ announcements, none of it. Everything else does, moderators and the
 broadcaster included; only the link/caps filters exempt mods, not
 visibility on this overlay.
 
-**Emotes are drawn as images**, not as their names: Twitch resolves its own
-(global and subscriber) emotes, and cheermotes are shown as the artwork
-followed by the bit amount in the tier's colour (the artwork comes from
-Twitch's Bits API, refreshed every 30 minutes; if that lookup fails the
-cheermote just shows as text — chat itself is never affected). Third-party
-emote services (7TV, BetterTTV, FrankerFaceZ) are not supported. Emote
-artwork is loaded by the OBS browser source directly from Twitch's CDN, so
-the machine running OBS needs internet access.
+**Emotes are drawn as images**, not as their names:
+
+- **Twitch** emotes (global and subscriber) arrive resolved in the message and
+  are loaded from Twitch's CDN. **Cheermotes** are shown as the artwork
+  followed by the bit amount in the tier's colour (artwork from Twitch's Bits
+  API, refreshed every 30 minutes).
+- **7TV, BetterTTV and FrankerFaceZ** emotes (global and your channel's) are
+  looked up by name and swapped in for the matching words. The bot downloads
+  each provider's lists in its own background task (aiohttp, 20 s timeout per
+  request) and refreshes them every 30 minutes — every 2 minutes until
+  something has loaded — so a slow provider never delays chat. If a provider is
+  down its emotes simply show as text, and its last good list is kept.
+  `TWITCH_EMOTE_PROVIDERS` chooses which providers are used (default all).
+- Where two providers use the same name, channel beats global, and within a
+  scope 7TV beats BTTV beats FFZ.
+- **7TV unlisted emotes are included**: anything in the channel's *active* 7TV
+  set renders, listed or not. Only emotes 7TV flags as not allowed on Twitch
+  are skipped.
+- **7TV zero-width emotes** (a hat or effect drawn over the previous emote) are
+  stacked on the emote before them, with only whitespace allowed between.
+  Limit: overlays are placed over the previous emote's box, so very wide
+  effects may be clipped to it; BTTV "modifier" emotes (`c!`, `h!`, ...) and FFZ
+  modifiers are left as text, not applied.
+- Image URLs only ever come from the providers' API responses, are https, and
+  are checked against a host allowlist (`7tv.app`, `betterttv.net`,
+  `frankerfacez.com`); chat text can't introduce one.
+
+Public APIs used (no authentication): 7TV `GET https://7tv.io/v3/emote-sets/global`,
+`/v3/users/twitch/{id}` (and `/v3/emote-sets/{id}` if needed); BetterTTV
+`GET https://api.betterttv.net/3/cached/emotes/global` and
+`/3/cached/users/twitch/{id}`; FrankerFaceZ `GET https://api.frankerfacez.com/v1/set/global`
+and `/v1/room/id/{id}`. The channel id is `TWITCH_OWNER_ID`. Images are loaded by
+the OBS browser source directly from the providers' CDNs (2x artwork, which
+covers retina), so the machine running OBS needs internet access.
 
 Nothing here is persisted — a restart starts the strip empty, which is
 correct for a "what's happening right now" widget rather than a log.
@@ -393,7 +440,7 @@ for. The script:
   backed up first; a customised one is kept and only appended to)
 - validates and reloads Caddy, opens ports 80/443 in `ufw` if it's active,
   and prints the cloud-firewall and Oracle `iptables` steps for 80/443
-- sets `TWITCH_PUBLIC_BASE_URL`, and asks for a `/settings` password (or
+- asks for a `/settings` password (or
   generates one) that Caddy checks before it lets anyone near `/settings` —
   username `admin`, stored only as a hash in the Caddy config
 
@@ -418,6 +465,57 @@ Other setups: nginx needs `proxy_buffering off`, a long `proxy_read_timeout`,
 plus `proxy_set_header X-Authenticated-User $remote_user;` (and clearing that
 header everywhere else). If only your own machines need access,
 an SSH tunnel or Tailscale exposes nothing to the internet instead.
+
+## Auto-deploy (GitHub Actions + SSH)
+
+Pushing to `main` runs `.github/workflows/deploy.yml`, which SSHes to the host
+and runs `deploy/remote-deploy.sh` there. It is written for the Oracle Linux
+box: user `tian`, host `pylxyrSG`, app in `~/PyxeeTB` (`/home/tian/PyxeeTB`),
+systemd unit `pyxeetb`.
+
+**What it does, in order:** checks the checkout and `data/` exist → `git fetch`
++ `git reset --hard origin/main` (untracked files are cleaned **except**
+`data/`, `.env`, `.env.bak`, `.venv`, `logs`) → applies the new `.env` if one
+was supplied → creates/updates `.venv` when `requirements.txt` changed → runs
+`bot.py --check-config` against the new code → `systemctl restart pyxeetb` →
+checks the service is active. Any failure (SSH, git, config check, restart,
+service not active) exits non-zero and the Actions job goes red; a failed
+config check stops *before* the running bot is touched. **`data/` (database,
+backups, OAuth tokens) is never deleted or overwritten** — it is git-ignored,
+and the script prints its size and file count before and after.
+
+**Secrets** (Settings → Secrets and variables → Actions; the first four are
+already configured):
+
+| Secret | Required | Meaning |
+|---|---|---|
+| `SSH_HOST` | yes | Host to deploy to |
+| `SSH_USER` | yes | `tian` |
+| `SSH_PRIVATE_KEY` | yes | Private key whose public half is in `~/.ssh/authorized_keys` on the host |
+| `SSH_PORT` | no | Defaults to 22 |
+| `DEPLOY_ENV` | no | The full contents of `.env`. **When set it overwrites `~/PyxeeTB/.env` on every deploy** (the old file is kept as `.env.bak`, mode 600). **When unset the server's `.env` is left alone** — `.env` holds Twitch secrets, so it can't be in git, and wiping it without a source would stop the bot |
+
+**Server prerequisites:** `tian` needs passwordless sudo for the restart —
+for example `/etc/sudoers.d/pyxeetb`:
+`tian ALL=(root) NOPASSWD: /usr/bin/systemctl restart pyxeetb, /usr/bin/journalctl -u pyxeetb *`
+(check the paths with `command -v systemctl journalctl`). The installed unit
+must point at the real checkout: `deploy/setup.sh` rewrites the template's
+`/home/ubuntu/pyxeetb` and `User=ubuntu` to wherever it was run and by whom, so
+running it from `~/PyxeeTB` as `tian` produces the right unit; check with
+`systemctl cat pyxeetb`. The committed `deploy/pyxeetb.service` is only that
+template.
+
+**Verify after a push:**
+
+1. Actions tab: **Deploy** and **Pages** are green.
+2. On the host: `systemctl status pyxeetb` shows `active (running)` with a
+   fresh start time; `journalctl -u pyxeetb -n 50` shows
+   `Chat emotes loaded (7tv=…, bttv=…, ffz=…)`.
+3. `ls data/` still has `community.db` and `twitch_tokens.json`.
+4. Open <https://pylxyr.github.io/PyxeeTB/commands> (built-ins only), and type
+   `!commands` in chat — it answers with that URL.
+5. In the `/chat-overlay`, send a 7TV/FFZ/BTTV emote from your channel's sets
+   and check it renders as an image.
 
 ## Security
 
@@ -444,9 +542,10 @@ an SSH tunnel or Tailscale exposes nothing to the internet instead.
   list and the link filter first (whether or not those filters are switched
   on) and replaced with `[removed]` if it trips either. The mod's own
   command text is left exactly as written.
-- **The public `/commands` page lists role-restricted custom commands, but
-  not what they say** — a subscriber-only invite link or a moderator note
-  isn't published to everyone.
+- **Custom commands are owner-only and never public** — only the broadcaster
+  can create, edit, delete or run them, and neither the GitHub Pages sheet,
+  the bot's `/commands` route nor `!commands` ever lists them (they are visible
+  only on the `/settings` page, which sits behind your proxy's sign-in).
 - **The moderation filter's delete action is opt-in and scope-gated** —
   `filter_delete_enabled` needs `moderator:manage:chat_messages` on the
   bot's token (not requested by the base OAuth setup); without it, a
@@ -609,8 +708,15 @@ timers don't burst when the stream resumes. `timers_enabled` pauses them all.
 reuse a built-in command, an existing counter (see [Counters](#counters)),
 or anything in `TWITCH_RESERVED_COMMANDS` — list the commands another bot
 in your channel answers to (for example `TWITCH_RESERVED_COMMANDS=sr,skip,np`
-for a separate song-request bot) so mods can't shadow them. `!comopt` sets
-a per-command cooldown and role. Custom commands never answer with an
+for a separate song-request bot) so a custom command can't shadow them.
+`!comopt <name> cd <seconds|default>` sets a per-command cooldown.
+
+Custom commands are **broadcaster-only**: only the broadcaster can run
+`!addcom`/`!editcom`/`!delcom`/`!comopt`, and only the broadcaster's `!<name>`
+produces a reply. A moderator or viewer typing one gets silence. (The
+per-command role option from earlier versions is gone; the old `min_role`
+column stays in the database, unused.) They never appear on the public
+commands page or in `!commands`. Custom commands never answer with an
 error (no permission, cooldown, unknown), since other bots share the prefix.
 Viewer-typed `{args}`/`{touser}` are scrubbed of blocked terms and links (see
 [Security](#security)).

@@ -151,21 +151,23 @@ _COMMANDS_PAGE_TTL_SECONDS = 30.0
 
 
 async def _commands_html(ctx: AdminContext) -> str:
-    """The /commands page, rebuilt at most every 30s so custom commands a mod
-    just added show up without a restart (and without a database hit per view)."""
+    """The /commands page, rebuilt at most every 30s so counters show their
+    current value (and without a database hit per view). Built-ins only, plus
+    counters — never custom commands, which are owner-only."""
     now = time.monotonic()
     if ctx.commands_cache is not None and now - ctx.commands_cache[0] < _COMMANDS_PAGE_TTL_SECONDS:
         return ctx.commands_cache[1]
     html = build_commands_page(
-        ctx.commands_prefix, has_logo=ctx.has_logo, custom=await ctx.db.load_commands(), counters=await ctx.db.load_counters()
+        ctx.commands_prefix, has_logo=ctx.has_logo, counters=await ctx.db.load_counters()
     )
     ctx.commands_cache = (now, html)
     return html
 
 
 async def handle_commands_page(request: web.Request) -> web.Response:
-    """Public, read-only command reference, linked from chat's !commands
-    once TWITCH_PUBLIC_BASE_URL is set — reachable by every viewer, not
+    """Public, read-only command reference (the same built-in commands as the
+    GitHub Pages sheet that !commands links to by default; reachable here too
+    when TWITCH_PUBLIC_BASE_URL points at this bot) — open to every viewer, not
     just moderators, so it's held to a higher bar than the other public
     routes: a per-IP rate limit (the one page advertised to the whole
     channel) plus anti-framing/no-referrer headers. It reads no body,

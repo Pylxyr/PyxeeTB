@@ -1,0 +1,72 @@
+name: Deploy
+
+# On every push to main: SSH to the Oracle host, update ~/PyxeeTB (deploy/remote-deploy.sh),
+# and restart the pyxeetb service. data/ is never touched. CI runs in parallel on the
+# same push and does not gate this job.
+#
+# Secrets (repository Actions secrets):
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY   required
+#   SSH_PORT                              optional (default 22)
+#   DEPLOY_ENV                            optional: the full contents of .env. When
+#                                         set, it OVERWRITES ~/PyxeeTB/.env on every
+#                                         deploy (the old file is kept as .env.bak).
+#                                         When unset, the existing .env is left alone.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check secrets
+        run: |
+          missing=0
+          for name in SSH_HOST SSH_USER SSH_PRIVATE_KEY; do
+            if [ -z "${!name}" ]; then echo "::error::Secret $name is not set"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Set up SSH
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -p "${SSH_PORT:-22}" -T 15 "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          test -s ~/.ssh/known_hosts || { echo "::error::Could not reach $SSH_HOST:${SSH_PORT:-22} (ssh-keyscan found nothing)"; exit 1; }
+
+      - name: Copy .env (only when DEPLOY_ENV is set)
+        env:
+          DEPLOY_ENV: ${{ secrets.DEPLOY_ENV }}
+        run: |
+          if [ -z "$DEPLOY_ENV" ]; then
+            echo "DEPLOY_ENV not set — leaving the server's .env untouched."
+            exit 0
+          fi
+          printf '%s\n' "$DEPLOY_ENV" > "$RUNNER_TEMP/new.env"
+          scp -i ~/.ssh/deploy_key -P "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+            "$RUNNER_TEMP/new.env" "$SSH_USER@$SSH_HOST:/tmp/pyxeetb-new.env"
+          rm -f "$RUNNER_TEMP/new.env"
+
+      - name: Update and restart on the server
+        run: |
+          ssh -i ~/.ssh/deploy_key -p "${SSH_PORT:-22}" -o BatchMode=yes -o ConnectTimeout=20 \
+            "$SSH_USER@$SSH_HOST" 'bash -s' < deploy/remote-deploy.sh

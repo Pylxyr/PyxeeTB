@@ -1,14 +1,17 @@
-"""The public /commands page: every public command, organised into tabs.
+"""The public commands page: every public built-in command, organised into tabs.
 
-Built from commands_reference.COMMANDS, the configured prefix, the mods'
-custom commands and their counters, and cached for a short time by
-handlers/live.py. It shows every public=True command exactly like chat's
-own !commands does, just with full descriptions instead of a terse
-pipe-separated line.
+Built from commands_reference.COMMANDS and the configured prefix. It shows every
+public=True command exactly like chat's own !commands does, just with full
+descriptions instead of a terse pipe-separated line.
 
-No per-request input feeds this — only owner/moderator-controlled data. The data is still embedded as JSON
-and rendered client-side as text rather than markup (see commands.js's
-escapeHtml) as a second layer of defence.
+Custom commands are owner-only and are never rendered here — this builder
+doesn't even accept them. Counters are optional (the bot's own /commands route
+passes them; the static GitHub Pages build never does).
+
+The same builder produces the static page published to GitHub Pages
+(pyxeetb/pages.py) and the bot's /commands route. No per-request input feeds
+it. The data is embedded as JSON and rendered client-side as text rather than
+markup (see commands.js's escapeHtml) as a second layer of defence.
 """
 
 from __future__ import annotations
@@ -19,16 +22,18 @@ from html import escape
 
 from pyxeetb.admin.assets import static_text, template
 from pyxeetb.commands_reference import CATEGORIES, COMMANDS
-from pyxeetb.db import Counter, CustomCommand
+from pyxeetb.db import Counter
 
-CUSTOM_CATEGORY = "Custom Commands"
 COUNTER_CATEGORY = "Counters"
-_ROLE_LABELS = {"everyone": "Anyone", "subscriber": "Subscribers", "vip": "VIPs", "moderator": "Moderators"}
-_MAX_CUSTOM_DESCRIPTION = 160
 
 
 def build_commands_page(
-    prefix: str, *, has_logo: bool, custom: Sequence[CustomCommand] = (), counters: Sequence[Counter] = ()
+    prefix: str,
+    *,
+    has_logo: bool,
+    counters: Sequence[Counter] = (),
+    logo_src: str = "/logo.png",
+    favicon_src: str = "/logo.png?s=32",
 ) -> str:
     payload = [
         {
@@ -44,27 +49,6 @@ def build_commands_page(
         if c.public
     ]
     categories = list(CATEGORIES)
-    if custom:
-        categories.append(CUSTOM_CATEGORY)
-        for c in custom:
-            if c.min_role == "everyone":
-                text = c.response if len(c.response) <= _MAX_CUSTOM_DESCRIPTION else c.response[:_MAX_CUSTOM_DESCRIPTION - 1] + "\u2026"
-            else:
-                # This page is public. A command limited to subscribers, VIPs or
-                # mods is listed, but its text may be exactly what is being kept
-                # from everyone else (an invite link, a note), so it isn't shown.
-                text = f"Available to {_ROLE_LABELS.get(c.min_role, 'some chatters').lower()} only."
-            payload.append(
-                {
-                    "name": c.name,
-                    "aliases": [],
-                    "usage": f"{prefix}{c.name}",
-                    "description": text,
-                    "who": _ROLE_LABELS.get(c.min_role, "Anyone"),
-                    "group": "anyone",
-                    "category": CUSTOM_CATEGORY,
-                }
-            )
     if counters:
         categories.append(COUNTER_CATEGORY)
         for ctr in counters:
@@ -92,12 +76,13 @@ def build_commands_page(
         f'<span class="dot"></span>{escape(cat)}<span class="count">{counts[cat]}</span></button>'
         for i, cat in enumerate(categories)
     )
-    logo = '<img src="/logo.png" alt="" onerror="this.remove()">' if has_logo else ""
+    logo = f'<img src="{escape(logo_src)}" alt="" onerror="this.remove()">' if has_logo else ""
 
     return template("commands.html").substitute(
         css=static_text("commands.css"),
         js=static_text("commands.js"),
         logo=logo,
+        favicon=escape(favicon_src),
         prefix=escape(prefix),
         tabs_html=tabs_html,
         first_category=escape(categories[0]),

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 from twitchio.ext import commands
 
-from pyxeetb.customcommands import MAX_RESPONSE_LENGTH, ROLES, clean_name, normalize_role
+from pyxeetb.customcommands import MAX_RESPONSE_LENGTH, clean_name
 from pyxeetb.textutil import parse_uint
 from pyxeetb.tunables import TUNABLE_BOUNDS
 
@@ -20,8 +20,10 @@ _MAX_COOLDOWN = TUNABLE_BOUNDS["custom_command_cooldown_seconds"][1]
 
 
 class CustomCommandsComponent(commands.Component):
-    """Mod-managed chat commands. Running them is handled by the bot's
-    CommandNotFound hook (see chatbot.py) via `CustomCommandStore.execute`."""
+    """Broadcaster-only chat commands: creating, editing and deleting them.
+    Moderators are refused by the guard (silently — GuardFailure is quiet in
+    chatbot.py). Running them is handled by the bot's CommandNotFound hook
+    (see chatbot.py) via `CustomCommandStore.execute`, which is owner-only too."""
 
     def __init__(self, reply: Reply, custom: CustomCommandStore, counters: CounterStore, reserved_names: frozenset[str]) -> None:
         self._reply = reply
@@ -29,7 +31,7 @@ class CustomCommandsComponent(commands.Component):
         self._counters = counters
         self._reserved_names = reserved_names
 
-    @commands.is_moderator()
+    @commands.is_broadcaster()
     @commands.command(name="addcom", aliases=["editcom"])
     async def add_command_cmd(self, ctx: commands.Context, *, args: str = "") -> None:
         parts = args.strip().split(maxsplit=1)
@@ -50,42 +52,31 @@ class CustomCommandsComponent(commands.Component):
         log.info("Custom command !%s set by %s (%s)", name, ctx.chatter.display_name, ctx.chatter.id)
         await self._reply(ctx, f"Saved !{name}.")
 
-    @commands.is_moderator()
+    @commands.is_broadcaster()
     @commands.command(name="delcom")
     async def del_command_cmd(self, ctx: commands.Context, *, name: str = "") -> None:
         cleaned = clean_name(name)
         removed = cleaned is not None and await self._custom.delete(cleaned)
         await self._reply(ctx, f"Removed !{cleaned}." if removed else f"No custom command !{cleaned or name.strip()}.")
 
-    @commands.is_moderator()
+    @commands.is_broadcaster()
     @commands.command(name="comopt")
     async def command_options_cmd(self, ctx: commands.Context, *, args: str = "") -> None:
-        """!comopt <name> cd <seconds|default>  |  !comopt <name> role <everyone|sub|vip|mod>"""
-        usage = "Usage: !comopt <name> cd <seconds|default>  or  !comopt <name> role <everyone|sub|vip|mod>"
+        """!comopt <name> cd <seconds|default>"""
+        usage = "Usage: !comopt <name> cd <seconds|default>"
         parts = args.split()
         name = clean_name(parts[0]) if parts else None
-        if name is None or len(parts) != 3:
+        if name is None or len(parts) != 3 or parts[1].lower() not in ("cd", "cooldown"):
             await self._reply(ctx, usage)
             return
-        option, value = parts[1].lower(), parts[2].lower()
-        if option in ("cd", "cooldown"):
-            if value == "default":
-                seconds = -1
-            elif (parsed := parse_uint(value)) is not None and parsed <= _MAX_COOLDOWN:
-                seconds = parsed
-            else:
-                await self._reply(ctx, f"Cooldown must be 0-{_MAX_COOLDOWN} seconds, or 'default'.")
-                return
-            found = await self._custom.set_option(name, cooldown_seconds=seconds)
-            label = "the default cooldown" if seconds < 0 else f"a {seconds}s cooldown"
-        elif option == "role":
-            role = normalize_role(value)
-            if role is None:
-                await self._reply(ctx, f"Role must be one of: {', '.join(ROLES)}.")
-                return
-            found = await self._custom.set_option(name, min_role=role)
-            label = f"role {role}"
+        value = parts[2].lower()
+        if value == "default":
+            seconds = -1
+        elif (parsed := parse_uint(value)) is not None and parsed <= _MAX_COOLDOWN:
+            seconds = parsed
         else:
-            await self._reply(ctx, usage)
+            await self._reply(ctx, f"Cooldown must be 0-{_MAX_COOLDOWN} seconds, or 'default'.")
             return
+        found = await self._custom.set_option(name, cooldown_seconds=seconds)
+        label = "the default cooldown" if seconds < 0 else f"a {seconds}s cooldown"
         await self._reply(ctx, f"!{name} now uses {label}." if found else f"No custom command !{name}.")
